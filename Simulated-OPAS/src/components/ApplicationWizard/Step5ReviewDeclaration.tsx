@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { SmartValidationFixBanner } from '../SmartValidationPanel'
 import { usePassport } from '../../context/PassportContext';
 import {
   FileText,
@@ -59,7 +60,7 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
-      <SmartValidationFixBanner referenceNumber={currentApp.referenceNumber} step={2} />
+      <SmartValidationFixBanner referenceNumber={currentApp.referenceNumber} step={5} />
       <div>
         <div className="flex items-center justify-between">
           <div>
