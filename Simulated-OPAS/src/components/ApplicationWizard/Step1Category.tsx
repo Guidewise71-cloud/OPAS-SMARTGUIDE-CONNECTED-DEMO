@@ -3,6 +3,8 @@ import { usePassport } from '../../context/PassportContext';
 import { ApplicationType, BookletType, ProcessingSpeed } from '../../types/passport';
 import { calculatePassportFees } from '../../data/mockData';
 import { BookOpen, Zap, Clock, Shield, ArrowRight } from 'lucide-react';
+import { SmartValidationFixBanner } from '../SmartValidationPanel';
+
 
 interface Step1CategoryProps {
   onNext: () => void;
@@ -39,6 +41,7 @@ export const Step1Category: React.FC<Step1CategoryProps> = ({ onNext }) => {
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
+       <SmartValidationFixBanner referenceNumber={currentApp.referenceNumber} step={1} />
       {/* Interactive Title Banner: Clicking triggers starting passport application */}
       <div
         onClick={onNext}
