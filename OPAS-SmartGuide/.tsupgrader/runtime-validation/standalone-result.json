@@ -1,0 +1,201 @@
+{
+  "planHash": "e2396c0fc0bf298d5535c20ccd55b720c87ae355b159e2ec9ca5b9255bc46a4f",
+  "phase": "standalone",
+  "recordedAtUtc": "2026-11-07T21:53:11.5861142Z",
+  "retryCount": 4,
+  "resetBaseline": false,
+  "complete": true,
+  "result": {
+    "setupSucceeded": true,
+    "setupDurationMs": 0,
+    "setupFailureOutput": null,
+    "assertions": [
+      {
+        "name": "tsc-no-emit",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "",
+        "durationMs": 5162
+      },
+      {
+        "name": "vite-build",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E react-example@0.0.0 build\r\n\u003E vite build\r\n\r\n\u001B[33m(!) Your Vite config uses features that are unsupported by \u0060configLoader: \u0027native\u0027\u0060, which is planned to become the default in a future major version of Vite:\r\n  - \u0060__dirname\u0060 (vite.config.ts:11:27). Use \u0060import.meta.dirname\u0060 instead\r\nSet \u0060VITE_CONFIG_NATIVE_IGNORE_WARNING=true\u0060 to suppress this warning.\u001B[39m\r\n\u001B[36mvite v8.3.6 \u001B[32mbuilding client environment for production...\u001B[36m\u001B[39m\r\ntransforming...\r\n\u2713 2059 modules transformed.\r\nrendering chunks...\r\ncomputing gzip size...\r\ndist/index.html                     1.05 kB \u2502 gzip:   0.45 kB\r\ndist/assets/index-DAcO_0j4.css    107.53 kB \u2502 gzip:  16.96 kB\r\ndist/assets/index-BFaWXSo2.js   1,127.57 kB \u2502 gzip: 289.65 kB\r\n\r\n\u001B[33m[plugin builtin:vite-reporter] \r\n(!) Some chunks are larger than 500 kB after minification. Consider:\r\n- Using dynamic import() to code-split the application\r\n- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting\r\n- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.\u001B[39m\r\n\u001B[32m\u2713 built in 3.13s\u001B[39m\r\n",
+        "durationMs": 6210
+      },
+      {
+        "name": "tests-pass",
+        "kind": "process",
+        "verificationMethod": "test-results",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E react-example@0.0.0 test\r\n\u003E vitest run\r\n\r\n\u001B[33m(!) Your Vite config uses features that are unsupported by \u0060configLoader: \u0027native\u0027\u0060, which is planned to become the default in a future major version of Vite:\r\n  - \u0060__dirname\u0060 (vite.config.ts:11:27). Use \u0060import.meta.dirname\u0060 instead\r\nSet \u0060VITE_CONFIG_NATIVE_IGNORE_WARNING=true\u0060 to suppress this warning.\u001B[39m\r\n\r\n RUN  v5.1.0 C:/Users/Hello/Desktop/opas-sim-backend\r\n\r\n\r\n Test Files  3 passed (3)\r\n      Tests  11 passed (11)\r\n   Start at  23:52:39\r\n   Duration  1.07s (import 33%, worker 29%, transform 23%, tests 15%, environment 1%)\r\n\r\n",
+        "durationMs": 4818,
+        "testResults": {
+          "testFramework": "vitest",
+          "runnerDetectedFrom": "package_json",
+          "testsTotal": 11,
+          "testsPassed": 11,
+          "testsFailed": 0,
+          "testsSkipped": 0,
+          "parseFailed": false
+        }
+      },
+      {
+        "name": "assistant-status-200",
+        "kind": "http-probe",
+        "verificationMethod": "http-status",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": null,
+        "outputSample": "HTTP 200\n{\u0022backend\u0022:true,\u0022live\u0022:true,\u0022mode\u0022:\u0022gemini-api\u0022,\u0022provider\u0022:\u0022gemini-api\u0022,\u0022providers\u0022:[\u0022gemini-api\u0022],\u0022model\u0022:\u0022gemini-2.5-flash\u0022,\u0022grounding\u0022:\u0022googleSearchOnGeminiProviders\u0022,\u0022timestamp\u0022:\u00222026-11-07T21:52:47.952Z\u0022}\n--- server output ---\n\r\n\u003E react-example@0.0.0 dev\r\n\u003E tsx server.ts\r\n\r\n\u25C7 injected env (2) from .env.local,.env // tip: \u2318 multiple files { path: [\u0027.env.local\u0027, \u0027.env\u0027] }\r\nOPAS reminder persistence initialized: 0 reminder(s) queued.\r\n\u001B[33m(!) Your Vite config uses features that are unsupported by \u0060configLoader: \u0027native\u0027\u0060, which is planned to become the default in a future major version of Vite:\r\n  - \u0060__dirname\u0060 (vite.config.ts:11:27). Use \u0060import.meta.dirname\u0060 instead\r\nSet \u0060VITE_CONFIG_NATIVE_IGNORE_WARNING=true\u0060 to suppress this warning.\u001B[39m\r\n\u0060server.hmr.protocol/host/port/path/clientPort/timeout/server\u0060 is deprecated. Use \u0060server.ws.*\u0060 instead. Note that this option may be set by a plugin. Set VITE_DEPRECATION_TRACE=1 to see where it is called.\r\nMoHAIS OPAS Intelligence Server running on port 3145\r\n",
+        "durationMs": 7035
+      },
+      {
+        "name": "payment-transactions-200",
+        "kind": "http-probe",
+        "verificationMethod": "http-status",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": null,
+        "outputSample": "HTTP 200\n{\u0022success\u0022:true,\u0022transactions\u0022:[{\u0022applicationReference\u0022:\u0022OPAS-2026-00718\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-998241\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:1500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-11-05T09:00:00Z\u0022},{\u0022applicationReference\u0022:\u0022OPAS-2026-00125\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-771920\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-11-01T10:15:00Z\u0022},{\u0022applicationReference\u0022:\u0022OPAS-2026-00301\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-612049\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-25T11:00:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-7731\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-991204\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-24T09:10:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-9554\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-994411\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-22T16:00:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-2401\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-710492\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:1000,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-22T11:00:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-6819\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-338192\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-19T13:40:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-0814\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-994821\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:1000,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-18T10:30:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-1592\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-849102\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-14T14:15:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-8841\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-882914\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-14T08:30:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-3118\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-109248\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-12T09:00:00Z\u0022},{\u0022applicationReference\u0022:\u0022OPAS-2026-00302\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-551029\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-10T11:00:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-4409\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-448102\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-08T11:20:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-8092\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-551920\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:1000,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-07T10:00:00Z\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-5220\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-990184\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:1500,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-10-05T08:15:00Z\u0022},{\u0022applicationReference\u0022:\u0022OPAS-2026-00303\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-440192\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022amount\u0022:1000,\u0022currency\u0022:\u0022ZMW\u0022,\u0022paymentDate\u0022:\u00222026-09-15T09:00:00Z\u0022}]}\n--- server output ---\n\r\n\u003E react-example@0.0.0 dev\r\n\u003E tsx server.ts\r\n\r\n\u25C7 injected env (2) from .env.local,.env // tip: \u2318 override existing { override: true }\r\nOPAS reminder persistence initialized: 0 reminder(s) queued.\r\n\u001B[33m(!) Your Vite config uses features that are unsupported by \u0060configLoader: \u0027native\u0027\u0060, which is planned to become the default in a future major version of Vite:\r\n  - \u0060__dirname\u0060 (vite.config.ts:11:27). Use \u0060import.meta.dirname\u0060 instead\r\nSet \u0060VITE_CONFIG_NATIVE_IGNORE_WARNING=true\u0060 to suppress this warning.\u001B[39m\r\n\u0060server.hmr.protocol/host/port/path/clientPort/timeout/server\u0060 is deprecated. Use \u0060server.ws.*\u0060 instead. Note that this option may be set by a plugin. Set VITE_DEPRECATION_TRACE=1 to see where it is called.\r\nMoHAIS OPAS Intelligence Server running on port 3145\r\n",
+        "durationMs": 7373
+      },
+      {
+        "name": "application-status-200",
+        "kind": "http-probe",
+        "verificationMethod": "http-status",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": null,
+        "outputSample": "HTTP 200\n{\u0022success\u0022:true,\u0022applications\u0022:[{\u0022applicationReference\u0022:\u0022OPAS-2026-00125\u0022,\u0022applicationStatus\u0022:\u0022REVERTED\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022OPAS-2026-001\u0022,\u0022applicationStatus\u0022:\u0022DRAFT\u0022,\u0022submissionStatus\u0022:\u0022NOT_SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-1592\u0022,\u0022applicationStatus\u0022:\u0022REVERTED\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-2401\u0022,\u0022applicationStatus\u0022:\u0022REVERTED\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-6819\u0022,\u0022applicationStatus\u0022:\u0022REVERTED\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-9102\u0022,\u0022applicationStatus\u0022:\u0022DRAFT\u0022,\u0022submissionStatus\u0022:\u0022NOT_SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-9554\u0022,\u0022applicationStatus\u0022:\u0022DRAFT\u0022,\u0022submissionStatus\u0022:\u0022NOT_SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-8841\u0022,\u0022applicationStatus\u0022:\u0022PAID_UNSUBMITTED\u0022,\u0022submissionStatus\u0022:\u0022NOT_SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-0814\u0022,\u0022applicationStatus\u0022:\u0022PAID_UNSUBMITTED\u0022,\u0022submissionStatus\u0022:\u0022NOT_SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022OPAS-2026-00718\u0022,\u0022applicationStatus\u0022:\u0022PAID_UNSUBMITTED\u0022,\u0022submissionStatus\u0022:\u0022NOT_SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-7731\u0022,\u0022applicationStatus\u0022:\u0022PROCESSING_PRINTING\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-8092\u0022,\u0022applicationStatus\u0022:\u0022SUBMITTED_UNDER_REVIEW\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-3118\u0022,\u0022applicationStatus\u0022:\u0022SUBMITTED_UNDER_REVIEW\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-4409\u0022,\u0022applicationStatus\u0022:\u0022BIOMETRICS_SCHEDULED\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-5220\u0022,\u0022applicationStatus\u0022:\u0022READY_FOR_COLLECTION\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022OPAS-2026-00301\u0022,\u0022applicationStatus\u0022:\u0022SUBMITTED_UNDER_REVIEW\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022OPAS-2026-00302\u0022,\u0022applicationStatus\u0022:\u0022BIOMETRICS_SCHEDULED\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022},{\u0022applicationReference\u0022:\u0022OPAS-2026-00303\u0022,\u0022applicationStatus\u0022:\u0022READY_FOR_COLLECTION\u0022,\u0022submissionStatus\u0022:\u0022SUBMITTED\u0022}]}\n--- server output ---\n\r\n\u003E react-example@0.0.0 dev\r\n\u003E tsx server.ts\r\n\r\n\u25C7 injected env (2) from .env.local,.env // tip: \u2318 override existing { override: true }\r\nOPAS reminder persistence initialized: 0 reminder(s) queued.\r\n\u001B[33m(!) Your Vite config uses features that are unsupported by \u0060configLoader: \u0027native\u0027\u0060, which is planned to become the default in a future major version of Vite:\r\n  - \u0060__dirname\u0060 (vite.config.ts:11:27). Use \u0060import.meta.dirname\u0060 instead\r\nSet \u0060VITE_CONFIG_NATIVE_IGNORE_WARNING=true\u0060 to suppress this warning.\u001B[39m\r\n\u0060server.hmr.protocol/host/port/path/clientPort/timeout/server\u0060 is deprecated. Use \u0060server.ws.*\u0060 instead. Note that this option may be set by a plugin. Set VITE_DEPRECATION_TRACE=1 to see where it is called.\r\nMoHAIS OPAS Intelligence Server running on port 3145\r\n",
+        "durationMs": 7669
+      },
+      {
+        "name": "smartguide-detections-200",
+        "kind": "http-probe",
+        "verificationMethod": "http-status",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": null,
+        "outputSample": "HTTP 200\n{\u0022success\u0022:true,\u0022source\u0022:\u0022simulated-opas\u0022,\u0022generatedAt\u0022:\u00222026-11-07T21:53:11.337Z\u0022,\u0022detections\u0022:[{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-9554\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-994411\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022applicationStatus\u0022:\u0022DRAFT\u0022,\u0022detectionType\u0022:\u0022PAID_NOT_SUBMITTED\u0022,\u0022message\u0022:\u0022Payment is recorded in the simulated OPAS registry, but the application is not marked as submitted.\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-8841\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-882914\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022applicationStatus\u0022:\u0022PAID_UNSUBMITTED\u0022,\u0022detectionType\u0022:\u0022PAID_NOT_SUBMITTED\u0022,\u0022message\u0022:\u0022Payment is recorded in the simulated OPAS registry, but the application is not marked as submitted.\u0022},{\u0022applicationReference\u0022:\u0022ZAM-OPAS-2026-0814\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-994821\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022applicationStatus\u0022:\u0022PAID_UNSUBMITTED\u0022,\u0022detectionType\u0022:\u0022PAID_NOT_SUBMITTED\u0022,\u0022message\u0022:\u0022Payment is recorded in the simulated OPAS registry, but the application is not marked as submitted.\u0022},{\u0022applicationReference\u0022:\u0022OPAS-2026-00718\u0022,\u0022transactionReference\u0022:\u0022GPG-TX-998241\u0022,\u0022paymentStatus\u0022:\u0022SUCCESSFUL\u0022,\u0022applicationStatus\u0022:\u0022PAID_UNSUBMITTED\u0022,\u0022detectionType\u0022:\u0022PAID_NOT_SUBMITTED\u0022,\u0022message\u0022:\u0022Payment is recorded in the simulated OPAS registry, but the application is not marked as submitted.\u0022}]}\n--- server output ---\n\r\n\u003E react-example@0.0.0 dev\r\n\u003E tsx server.ts\r\n\r\n\u25C7 injected env (2) from .env.local,.env // tip: \u2318 override existing { override: true }\r\nOPAS reminder persistence initialized: 0 reminder(s) queued.\r\n\u001B[33m(!) Your Vite config uses features that are unsupported by \u0060configLoader: \u0027native\u0027\u0060, which is planned to become the default in a future major version of Vite:\r\n  - \u0060__dirname\u0060 (vite.config.ts:11:27). Use \u0060import.meta.dirname\u0060 instead\r\nSet \u0060VITE_CONFIG_NATIVE_IGNORE_WARNING=true\u0060 to suppress this warning.\u001B[39m\r\n\u0060server.hmr.protocol/host/port/path/clientPort/timeout/server\u0060 is deprecated. Use \u0060server.ws.*\u0060 instead. Note that this option may be set by a plugin. Set VITE_DEPRECATION_TRACE=1 to see where it is called.\r\nMoHAIS OPAS Intelligence Server running on port 3145\r\n",
+        "durationMs": 7442
+      }
+    ],
+    "executions": [
+      {
+        "source": "tsc-no-emit",
+        "resolvedExecutable": "C:\\Users\\Hello\\node-v24.15.0-win-x64\\node.EXE",
+        "args": [
+          "node_modules/typescript/bin/tsc",
+          "--noEmit"
+        ],
+        "cwd": "C:\\Users\\Hello\\Desktop\\opas-sim-backend",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "vite-build",
+        "resolvedExecutable": "C:\\Users\\Hello\\node-v24.15.0-win-x64\\npm.CMD",
+        "args": [
+          "run",
+          "build"
+        ],
+        "cwd": "C:\\Users\\Hello\\Desktop\\opas-sim-backend",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "tests-pass",
+        "resolvedExecutable": "C:\\Users\\Hello\\node-v24.15.0-win-x64\\npm.CMD",
+        "args": [
+          "test"
+        ],
+        "cwd": "C:\\Users\\Hello\\Desktop\\opas-sim-backend",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "assistant-status-200",
+        "resolvedExecutable": "C:\\Users\\Hello\\node-v24.15.0-win-x64\\npm.CMD",
+        "args": [
+          "run",
+          "dev"
+        ],
+        "cwd": "C:\\Users\\Hello\\Desktop\\opas-sim-backend",
+        "env": {
+          "PORT": "3145"
+        },
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "payment-transactions-200",
+        "resolvedExecutable": "C:\\Users\\Hello\\node-v24.15.0-win-x64\\npm.CMD",
+        "args": [
+          "run",
+          "dev"
+        ],
+        "cwd": "C:\\Users\\Hello\\Desktop\\opas-sim-backend",
+        "env": {
+          "PORT": "3145"
+        },
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "application-status-200",
+        "resolvedExecutable": "C:\\Users\\Hello\\node-v24.15.0-win-x64\\npm.CMD",
+        "args": [
+          "run",
+          "dev"
+        ],
+        "cwd": "C:\\Users\\Hello\\Desktop\\opas-sim-backend",
+        "env": {
+          "PORT": "3145"
+        },
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "smartguide-detections-200",
+        "resolvedExecutable": "C:\\Users\\Hello\\node-v24.15.0-win-x64\\npm.CMD",
+        "args": [
+          "run",
+          "dev"
+        ],
+        "cwd": "C:\\Users\\Hello\\Desktop\\opas-sim-backend",
+        "env": {
+          "PORT": "3145"
+        },
+        "prependPath": [],
+        "platform": "win32"
+      }
+    ]
+  }
+}

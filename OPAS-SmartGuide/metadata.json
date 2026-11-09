@@ -1,0 +1,8 @@
+{
+  "name": "Remix Guidewise OPAS ",
+  "description": "Zambia MoHAIS OPAS passport operations dashboard and applicant intelligence portal with automated triage, SLA surveillance, and accessibility-optimized views.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Zambia Online Passport Application System (OPAS)",
+  "description": "Republic of Zambia official simulated portal for passport applications: citizen account registration, NRC validation, personal details, document uploads, and secure payment via Mobile Money and Bank Card.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
