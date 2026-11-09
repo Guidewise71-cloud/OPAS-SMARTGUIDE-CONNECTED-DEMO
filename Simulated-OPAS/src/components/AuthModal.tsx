@@ -57,12 +57,13 @@ export const AuthModal: React.FC = () => {
         setError('Please enter a valid National Registration Card (NRC) number (e.g. 123456/78/1).');
         return;
       }
-      const createdUser = registerUser({
+    const createdUser = registerUser({
         fullName: fullName.trim(),
         email: email.trim(),
         phone: phone.trim(),
         nrcNumber: nrcNumber.trim(),
         dateOfBirth,
+        password,
       });
       startNewApplication('NEW', createdUser);
     }
