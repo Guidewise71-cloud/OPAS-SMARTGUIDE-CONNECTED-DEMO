@@ -1369,6 +1369,45 @@ app.post(['/api/integration/application-events', '/api/integration/opas/applicat
   return res.status(result.httpStatus).json(result.body);
 });
 
+// Application Error Detection Engine: Simulated OPAS sends the full application before Review/Payment.
+function getApplicationAiChecker(): AiConsistencyChecker | undefined {
+  const aiClient = getAiClient();
+  if (!aiClient) return undefined;
+  return async (summary) => {
+    const response: any = await aiClient.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: `${AI_CONSISTENCY_PROMPT}\n\nApplication data (JSON):\n${JSON.stringify(summary)}`,
+      config: { responseMimeType: 'application/json', temperature: 0.1 },
+    });
+    const parsed = JSON.parse(response.text || '{}');
+    return Array.isArray(parsed?.findings) ? parsed.findings : [];
+  };
+}
+
+app.post(['/api/integration/validate-application', '/api/integration/opas/validate-application'], createApplicationValidationHandler({
+  getSecret: () => process.env.OPAS_INTEGRATION_SECRET,
+  getAiChecker: getApplicationAiChecker,
+  onResult: (result) => saveIntegrationEvent({
+    id: `validation-${result.applicationReference}-${Date.now()}`,
+    kind: 'APPLICATION_VALIDATION',
+    applicationReference: result.applicationReference,
+    outcome: result.status,
+    receivedAt: result.validatedAt,
+    errorCount: result.errorCount,
+    warningCount: result.warningCount,
+    issues: result.issues.map(({ code, step, field, severity }) => ({ code, step, field, severity })),
+  }),
+}));
+
+app.get('/api/integration/validation-results/:reference', requireStaff('officer', 'supervisor', 'admin'), (req, res) => {
+  const result = latestValidationResults.get(String(req.params.reference));
+  if (!result) return res.status(404).json({ success: false, error: 'No validation result for this application yet.' });
+  return res.json({ success: true, result });
+});
+
+
+
+
 app.get('/api/integration/events', requireStaff('officer', 'supervisor', 'admin'), (_req, res) => {
   return res.json({ success: true, events: listIntegrationEvents(200) });
 });
