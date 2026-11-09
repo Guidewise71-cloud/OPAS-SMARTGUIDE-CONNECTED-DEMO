@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { SmartValidationFixBanner } from '../SmartValidationPanel'
 import { usePassport } from '../../context/PassportContext';
-import { UploadedDoc, PhotoComplianceReport } from '../../types/passport';
+import type { UploadedDoc, PhotoComplianceReport } from '../../types/passport';
 import {
   SAMPLE_PASSPORT_PHOTO_SVG,
   SAMPLE_ZAMBIAN_NRC_SVG,
@@ -28,13 +28,11 @@ interface Step4DocumentsProps {
 }
 
 export const Step4Documents: React.FC<Step4DocumentsProps> = ({ onNext, onBack }) => {
-  const { currentApp, updateCurrentApplication } = usePassport();
 
-  if (!currentApp) return null;
+  
+ const { currentApp, updateCurrentApplication } = usePassport();
 
-  const docs = currentApp.documents;
-  const isRenewal = currentApp.applicationType === 'RENEWAL';
-
+  // All hooks run before any early return (Rules of Hooks).
   const [previewDoc, setPreviewDoc] = useState<UploadedDoc | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -42,6 +40,11 @@ export const Step4Documents: React.FC<Step4DocumentsProps> = ({ onNext, onBack }
   const birthCertFileRef = useRef<HTMLInputElement>(null);
   const photoFileRef = useRef<HTMLInputElement>(null);
   const parentsNrcRef = useRef<HTMLInputElement>(null);
+
+  if (!currentApp) return null;
+
+  const docs = currentApp.documents;
+  const isRenewal = currentApp.applicationType === 'RENEWAL';
 
   const handleFileUpload = (
     e: React.ChangeEvent<HTMLInputElement>,
