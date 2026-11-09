@@ -6,7 +6,8 @@ import type { ApplicationStatus, NotificationLog, PassportApplication } from '..
 import type { ReminderRule } from '../utils/reminderRules.ts';
 import { availableChannels } from '../utils/reminderRules.ts';
 import type { SimulatedPaymentTransaction } from './persistence.ts';
-
+import { AI_CONSISTENCY_PROMPT, type AiConsistencyChecker } from './src/server/applicationErrorEngine.ts';
+import { createApplicationValidationHandler, latestValidationResults } from './src/server/applicationValidationRoute.ts';
 // ---------------------------------------------------------------------------------------------------------
 // 1. Request authentication (HMAC-SHA256 over "<timestamp>.<raw body>")
 // ---------------------------------------------------------------------------------------------------------
