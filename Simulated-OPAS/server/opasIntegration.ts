@@ -14,7 +14,8 @@ export interface SignedPostResult {
 export type IntegrationPath =
   | '/api/integration/opas/payment-events'
   | '/api/integration/opas/application-events'
-  | '/api/integration/opas/applications';
+   | '/api/integration/opas/applications'
+  | '/api/integration/opas/validate-application';
 
 export async function postSignedEvent(
   baseUrl: string,
@@ -75,3 +76,9 @@ export const sendApplicationEvent = (baseUrl: string, secret: string, event: App
 
 export const sendApplications = (baseUrl: string, secret: string, applications: Array<Record<string, unknown>>) =>
   postSignedEvent(baseUrl, '/api/integration/opas/applications', secret, { applications });
+
+
+// Application Error Detection Engine (SmartGuide). Sends the full application and returns the
+// validation result: errors/warnings with the OPAS step and field to correct.
+export const sendApplicationForValidation = (baseUrl: string, secret: string, application: Record<string, unknown>) =>
+  postSignedEvent(baseUrl, '/api/integration/opas/validate-application', secret, { application });
