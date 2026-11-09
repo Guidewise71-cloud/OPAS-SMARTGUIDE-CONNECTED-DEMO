@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { SmartValidationFixBanner } from '../SmartValidationPanel'
+
 import { usePassport } from '../../context/PassportContext';
 import { PersonalDetails, ZambianProvince } from '../../types/passport';
 import { ArrowLeft, ArrowRight, AlertCircle, Sparkles, UserCheck } from 'lucide-react';
