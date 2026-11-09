@@ -1,6 +1,12 @@
-import React, { useState } from 'react';
-import { SmartValidationFixBanner } from '../SmartValidationPanel'
+import React, { useRef, useState } from 'react';
 import { usePassport } from '../../context/PassportContext';
+import type { PassportApplication } from '../../types/passport';
+import { SmartValidationPanel } from '../SmartValidationPanel';
+import {
+  validateApplication,
+  loadValidationResult,
+  type SmartValidationResult,
+} from '../../services/smartValidation';
 import {
   FileText,
   CheckCircle,
@@ -9,6 +15,8 @@ import {
   ArrowRight,
   ShieldCheck,
   Lock,
+  Loader2,
+  Sparkles,
 } from 'lucide-react';
 
 interface Step5ReviewDeclarationProps {
@@ -24,16 +32,49 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
 }) => {
   const { currentApp, updateCurrentApplication } = usePassport();
 
-  if (!currentApp) return null;
-
-  const [agreed, setAgreed] = useState(currentApp.declaration.agreed);
-  const [signature, setSignature] = useState(
-    currentApp.declaration.digitalSignature ||
-      `${currentApp.personalDetails.givenNames} ${currentApp.personalDetails.surname}`.trim()
+  // All hooks run before any early return (Rules of Hooks).
+  const [agreed, setAgreed] = useState<boolean>(currentApp?.declaration.agreed ?? false);
+  const [signature, setSignature] = useState<string>(
+    currentApp?.declaration.digitalSignature ||
+      `${currentApp?.personalDetails.givenNames ?? ''} ${currentApp?.personalDetails.surname ?? ''}`.trim()
   );
   const [error, setError] = useState<string | null>(null);
 
-  const handleProceed = () => {
+  // Smart Validation state
+  const [validating, setValidating] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [validationResult, setValidationResult] = useState<SmartValidationResult | null>(() =>
+    currentApp ? loadValidationResult(currentApp.referenceNumber) : null
+  );
+  const [warningsAcknowledged, setWarningsAcknowledged] = useState(false);
+  const validationPanelRef = useRef<HTMLDivElement>(null);
+
+  if (!currentApp) return null;
+
+  const scrollToValidation = () => {
+    requestAnimationFrame(() =>
+      validationPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    );
+  };
+
+  // Any change to the declaration invalidates a previous warning acknowledgement.
+  const resetAcknowledgement = () => {
+    setWarningsAcknowledged(false);
+  };
+
+  const proceedToPayment = (declaration: PassportApplication['declaration']) => {
+    updateCurrentApplication({
+      declaration,
+      status: 'PAYMENT_PENDING',
+    });
+    setError(null);
+    onNext();
+  };
+
+  const handleValidateAndProceed = async () => {
+    if (validating) return;
+
+    // 1. Local declaration checks
     if (!agreed) {
       setError('You must accept the statutory sworn declaration under the Laws of Zambia to proceed.');
       return;
@@ -42,25 +83,77 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
       setError('Digital signature (full legal name as on NRC) is required.');
       return;
     }
-
-    updateCurrentApplication({
-      declaration: {
-        agreed: true,
-        digitalSignature: signature.trim(),
-        signedAt: new Date().toISOString(),
-      },
-      status: 'PAYMENT_PENDING',
-    });
     setError(null);
-    onNext();
+
+    const declaration: PassportApplication['declaration'] = {
+      agreed: true,
+      digitalSignature: signature.trim(),
+      signedAt: new Date().toISOString(),
+    };
+
+    // 2. Warnings already shown and acknowledged on the previous click: proceed.
+    if (
+      warningsAcknowledged &&
+      validationResult?.status === 'PASSED_WITH_WARNINGS' &&
+      validationResult.canProceed
+    ) {
+      proceedToPayment(declaration);
+      return;
+    }
+
+    // 3. Run Smart Validation against the full application including the signed declaration.
+    const appForValidation: PassportApplication = { ...currentApp, declaration };
+
+    setValidating(true);
+    setValidationError(null);
+    const outcome = await validateApplication(appForValidation);
+    setValidating(false);
+
+    if (!outcome.ok) {
+      setValidationResult(null);
+      setValidationError(outcome.error);
+      scrollToValidation();
+      return;
+    }
+
+    const result = outcome.result;
+    setValidationResult(result);
+
+    // Keep the signed declaration saved, without moving to payment yet.
+    updateCurrentApplication({ declaration });
+
+    if (!result.canProceed || result.status === 'FAILED') {
+      setWarningsAcknowledged(false);
+      scrollToValidation();
+      return;
+    }
+
+    if (result.status === 'PASSED_WITH_WARNINGS') {
+      // Show warnings first; the next click proceeds.
+      setWarningsAcknowledged(true);
+      scrollToValidation();
+      return;
+    }
+
+    // PASSED
+    proceedToPayment(declaration);
   };
 
   const p = currentApp.personalDetails;
   const fees = currentApp.payment.breakdown;
 
+  const hasBlockingErrors =
+    !!validationResult && (!validationResult.canProceed || validationResult.status === 'FAILED');
+  const awaitingWarningConfirmation =
+    warningsAcknowledged && validationResult?.status === 'PASSED_WITH_WARNINGS';
+
+  let primaryLabel = 'Validate & Proceed to ZamPay Secure Payment';
+  if (validating) primaryLabel = 'Validating application…';
+  else if (awaitingWarningConfirmation) primaryLabel = 'Acknowledge Warnings & Proceed to Payment';
+  else if (hasBlockingErrors || validationError) primaryLabel = 'Re-validate & Proceed';
+
   return (
     <div className="max-w-4xl mx-auto space-y-8">
-      <SmartValidationFixBanner referenceNumber={currentApp.referenceNumber} step={5} />
       <div>
         <div className="flex items-center justify-between">
           <div>
@@ -87,6 +180,16 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
           <span>{error}</span>
         </div>
       )}
+
+      {/* Smart Validation results */}
+      <div ref={validationPanelRef} className="scroll-mt-6">
+        <SmartValidationPanel
+          result={validationResult}
+          error={validationError}
+          loading={validating}
+          onFix={onEditSection}
+        />
+      </div>
 
       {/* Review Section 1: Passport Type */}
       <div className="bg-white border border-slate-200 rounded-lg p-5">
@@ -202,21 +305,27 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
           <div className="p-2.5 bg-slate-50 border border-slate-200 rounded flex items-center justify-between">
             <span className="truncate pr-2">
-              Green NRC: <strong>{currentApp.documents.nrcFrontBack?.name}</strong>
+              Green NRC: <strong>{currentApp.documents.nrcFrontBack?.name || 'Not uploaded'}</strong>
             </span>
-            <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+            {currentApp.documents.nrcFrontBack
+              ? <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              : <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0" />}
           </div>
           <div className="p-2.5 bg-slate-50 border border-slate-200 rounded flex items-center justify-between">
             <span className="truncate pr-2">
-              Birth Cert: <strong>{currentApp.documents.birthCertificate?.name}</strong>
+              Birth Cert: <strong>{currentApp.documents.birthCertificate?.name || 'Not uploaded'}</strong>
             </span>
-            <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+            {currentApp.documents.birthCertificate
+              ? <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              : <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0" />}
           </div>
           <div className="p-2.5 bg-slate-50 border border-slate-200 rounded flex items-center justify-between">
             <span className="truncate pr-2">
-              Photo: <strong>{currentApp.documents.passportPhoto?.name}</strong>
+              Photo: <strong>{currentApp.documents.passportPhoto?.name || 'Not uploaded'}</strong>
             </span>
-            <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+            {currentApp.documents.passportPhoto
+              ? <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              : <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0" />}
           </div>
         </div>
       </div>
@@ -257,6 +366,7 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
             onChange={e => {
               setAgreed(e.target.checked);
               setError(null);
+              resetAcknowledgement();
             }}
             className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-800 focus:ring-emerald-700 cursor-pointer"
           />
@@ -273,7 +383,11 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
             <input
               type="text"
               value={signature}
-              onChange={e => setSignature(e.target.value)}
+              onChange={e => {
+                setSignature(e.target.value);
+                setError(null);
+                resetAcknowledgement();
+              }}
               placeholder="e.g. Chileshe Natasha Mwape"
               className="w-full px-3 py-2 text-sm font-serif italic border border-slate-300 bg-white rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-700"
             />
@@ -297,12 +411,22 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
         </div>
       </div>
 
+      {/* Smart Validation notice */}
+      <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-700 flex items-start gap-2">
+        <Sparkles className="w-4 h-4 text-emerald-800 shrink-0 mt-0.5" />
+        <span>
+          When you select <strong>Validate &amp; Proceed</strong>, SmartGuide checks your whole application for errors before payment.
+          If anything needs correcting, use the <strong>Fix</strong> buttons to return to the right step.
+        </span>
+      </div>
+
       {/* Action Footer */}
       <div className="flex items-center justify-between pt-4 border-t border-slate-200">
         <button
           type="button"
           onClick={onBack}
-          className="px-4 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium text-xs rounded-md transition-colors flex items-center gap-2 cursor-pointer"
+          disabled={validating}
+          className="px-4 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium text-xs rounded-md transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <ArrowLeft className="w-4 h-4" />
           Back to Documents
@@ -310,12 +434,16 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
 
         <button
           type="button"
-          onClick={handleProceed}
-          className="px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-md transition-colors flex items-center gap-2 cursor-pointer shadow-sm"
+          onClick={handleValidateAndProceed}
+          disabled={validating}
+          aria-busy={validating}
+          className="px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-md transition-colors flex items-center gap-2 cursor-pointer shadow-sm disabled:opacity-60 disabled:cursor-wait"
         >
-          <Lock className="w-4 h-4 text-amber-400" />
-          <span>Proceed to ZamPay Secure Payment Gateway</span>
-          <ArrowRight className="w-4 h-4" />
+          {validating
+            ? <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
+            : <Lock className="w-4 h-4 text-amber-400" />}
+          <span>{primaryLabel}</span>
+          {!validating && <ArrowRight className="w-4 h-4" />}
         </button>
       </div>
     </div>
