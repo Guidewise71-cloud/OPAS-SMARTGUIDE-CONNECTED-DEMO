@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { SmartValidationFixBanner } from '../SmartValidationPanel'
 import { usePassport } from '../../context/PassportContext';
 import { UploadedDoc, PhotoComplianceReport } from '../../types/passport';
 import {
@@ -168,6 +169,7 @@ export const Step4Documents: React.FC<Step4DocumentsProps> = ({ onNext, onBack }
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
+            <SmartValidationFixBanner referenceNumber={currentApp.referenceNumber} step={4} />
       <div>
         <h2 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
           <Upload className="w-5 h-5 text-emerald-800" />
