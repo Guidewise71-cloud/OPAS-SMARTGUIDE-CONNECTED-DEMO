@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { usePassport } from '../../context/PassportContext';
 import { PreviousPassportDetails } from '../../types/passport';
 import { ArrowLeft, ArrowRight, Plane, AlertTriangle, ShieldCheck } from 'lucide-react';
-
+import { SmartValidationFixBanner } from '../SmartValidationPanel';
 interface Step3TravelHistoryProps {
   onNext: () => void;
   onBack: () => void;
@@ -45,6 +45,7 @@ export const Step3TravelHistory: React.FC<Step3TravelHistoryProps> = ({ onNext, 
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
+         <SmartValidationFixBanner referenceNumber={currentApp.referenceNumber} step={3} />
       <div>
         <h2 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
           <Plane className="w-5 h-5 text-emerald-800" />
