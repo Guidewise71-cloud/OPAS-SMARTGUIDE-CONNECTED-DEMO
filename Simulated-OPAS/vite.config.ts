@@ -7,7 +7,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {defineConfig, loadEnv, Plugin} from 'vite';
-import { sendApplicationEvent, sendApplications, sendPaymentEvent, type ApplicationEventInput, type PaymentEventInput } from './server/opasIntegration.ts';
+import { sendApplicationEvent, sendApplicationForValidation, sendApplications, sendPaymentEvent, type ApplicationEventInput, type PaymentEventInput } from './server/opasIntegration.ts';
 
 // Simulated OPAS application-status store. In production this data comes from OPAS.
 const opasApplicationStatuses: Array<{
@@ -367,6 +367,50 @@ function opasPaymentApiPlugin(apiKey: string, oidcIssuer: string, oidcAudience: 
         const url = req.url || '';
 
         // Local-only identity bridge used by the separate SmartGuide app.
+        // Smart Validation: browser -> Simulated OPAS server -> signed call to SmartGuide error detection engine.
+        // The shared secret never reaches the browser.
+        if (url === '/api/opas/validate-application' && req.method === 'POST') {
+          let body = '';
+          req.on('data', chunk => { body += chunk; });
+          req.on('end', () => {
+            void (async () => {
+              let application: any;
+              try {
+                application = JSON.parse(body || '{}')?.application;
+              } catch {
+                sendJson(res, 400, { success: false, error: 'Invalid validation request.' });
+                return;
+              }
+              if (!application || typeof application !== 'object' || !application.referenceNumber) {
+                sendJson(res, 400, { success: false, error: 'application with referenceNumber is required.' });
+                return;
+              }
+              if (!smartGuideBaseUrl || !integrationSecret) {
+                sendJson(res, 503, { success: false, error: 'Smart Validation is not configured (SMARTGUIDE_API_BASE_URL / OPAS_INTEGRATION_SECRET).' });
+                return;
+              }
+              // Identity consistency uses the server-side account record, not data supplied by the browser.
+              const account = syntheticAccounts.find(u => u.id === application.userId);
+              const { statusHistory, payment, appointment, ...rest } = application;
+              const payload = {
+                ...rest,
+                accountProfile: account ? { fullName: account.fullName, nrcNumber: account.nrcNumber, dateOfBirth: account.dateOfBirth, email: account.email, phone: account.phone } : undefined,
+              };
+              try {
+                const result: any = (await sendApplicationForValidation(smartGuideBaseUrl, integrationSecret, payload)).body;
+                sendJson(res, 200, { success: true, result: result?.result });
+              } catch (error: any) {
+                console.error('SmartGuide validation failed:', error);
+                sendJson(res, 502, { success: false, error: error?.message || 'SmartGuide validation service could not be reached.' });
+              }
+            })();
+          });
+          return;
+        }
+
+
+
+        
         if (url === '/api/identity/register' && req.method === 'POST') {
           let body = '';
           req.on('data', chunk => { body += chunk; });
