@@ -26,15 +26,13 @@ export const Step2PersonalDetails: React.FC<Step2PersonalDetailsProps> = ({ onNe
   const { currentApp, updateCurrentApplication } = usePassport();
 
   // All hooks run before any early return (Rules of Hooks).
+  
   const [formData, setFormData] = useState<PersonalDetails>(
     () => (currentApp?.personalDetails ?? {}) as PersonalDetails
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   if (!currentApp) return null;
-
-  const [formData, setFormData] = useState<PersonalDetails>(currentApp.personalDetails);
-  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const formatNRC = (val: string) => {
     const raw = val.replace(/[^0-9]/g, '');
