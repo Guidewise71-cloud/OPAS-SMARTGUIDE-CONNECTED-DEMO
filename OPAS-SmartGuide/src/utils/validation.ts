@@ -49,6 +49,8 @@ export function detectApplicationFormIssues(input: ApplicationFormCheckInput): A
     const birthDate = new Date(`${input.dateOfBirth}T00:00:00`);
     if (Number.isNaN(birthDate.getTime()) || birthDate > new Date()) {
       add('Date of birth', 1, 'Enter a valid date that is not in the future.');
+    } else if (new Date().getFullYear() - birthDate.getFullYear() > 120) {
+      add('Date of birth', 1, 'The date of birth gives an age over 120 years; check the year you entered.');
     } else {
       const today = new Date();
       let age = today.getFullYear() - birthDate.getFullYear();
@@ -121,12 +123,20 @@ export function validateNRC(nrc: string): { isValid: boolean; message?: string }
     return { isValid: false, message: 'NRC number is required.' };
   }
   const clean = nrc.trim();
-  const nrcRegex = /^\d{6}\/\d{2}\/\d{1}$/;
-  if (!nrcRegex.test(clean)) {
+  const nrcRegex = /^(\d{6})\/(\d{2})\/(\d{1})$/;
+  const match = clean.match(nrcRegex);
+  if (!match) {
     return {
       isValid: false,
       message: 'Format must be 6 digits / 2 digits / 1 digit (e.g., 294812/11/1).',
     };
+  }
+  // Plausibility: placeholder values such as 000000/00/0 are never issued.
+  if (match[1] === '000000') {
+    return { isValid: false, message: 'The first 6 digits of the NRC cannot all be zero; copy the number exactly as printed on the card.' };
+  }
+  if (match[2] === '00') {
+    return { isValid: false, message: 'The middle 2-digit code of the NRC cannot be 00; copy the number exactly as printed on the card.' };
   }
   return { isValid: true };
 }
@@ -152,8 +162,9 @@ export function validateEmail(email: string): { isValid: boolean; warning?: stri
     return { isValid: false, error: 'Email address is required for official status updates.' };
   }
   const clean = email.trim().toLowerCase();
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(clean)) {
+  // local@domain.tld — TLD of at least 2 letters, no consecutive dots, no leading/trailing dot.
+  const emailRegex = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/;
+  if (!emailRegex.test(clean) || clean.includes('..') || clean.startsWith('.') || clean.split('@')[0].endsWith('.')) {
     return { isValid: false, error: 'Please enter a valid email format (e.g., name@domain.com).' };
   }
 
@@ -183,35 +194,166 @@ export function validatePhoneNumber(phone: string, countryCode: string = '+260')
     return { isValid: false, formatted: phone, error: 'Phone number is required for SMS delivery updates.' };
   }
 
-  let clean = phone.replace(/[\s\-\(\)]/g, '');
+  const clean = phone.replace(/[\s\-\(\)\.]/g, '');
+  const code = (countryCode || '+260').trim();
 
-  // Detect national format starting with 0
-  if (clean.startsWith('0')) {
-    // Strip leading 0 and prepend country code
-    const withoutZero = clean.substring(1);
-    const corrected = `${countryCode}${withoutZero}`;
-    return {
-      isValid: true,
-      formatted: corrected,
-      warning: `Entered local format (0...). Converted to standard international format: ${corrected}`,
-    };
+  if (!/^\+\d{1,3}$/.test(code)) {
+    return { isValid: false, formatted: clean, error: `Country code "${code}" is not valid. Use the format +260.` };
+  }
+  if (!/^\+?\d+$/.test(clean)) {
+    return { isValid: false, formatted: clean, error: 'Phone number may contain only digits, spaces, dashes, brackets and a leading +.' };
   }
 
-  // If already starts with +
+  let e164: string;
+  let warning: string | undefined;
   if (clean.startsWith('+')) {
-    if (clean.length < 10 || clean.length > 15) {
-      return { isValid: false, formatted: clean, error: 'International phone numbers must be between 10 and 15 digits.' };
-    }
-    return { isValid: true, formatted: clean };
+    e164 = clean;
+  } else if (clean.startsWith('00')) {
+    e164 = `+${clean.substring(2)}`;
+    warning = `International prefix 00 converted to +: ${e164}`;
+  } else if (clean.startsWith('0')) {
+    e164 = `${code}${clean.substring(1)}`;
+    warning = `Entered local format (0...). Converted to standard international format: ${e164}`;
+  } else {
+    e164 = `${code}${clean}`;
+    warning = `Country code ${code} auto-prepended: ${e164}`;
   }
 
-  // If no prefix, assume country code
-  const formattedWithCode = `${countryCode}${clean}`;
-  return {
-    isValid: true,
-    formatted: formattedWithCode,
-    warning: `Country code ${countryCode} auto-prepended: ${formattedWithCode}`,
-  };
+  if (e164.startsWith('+260')) {
+    const national = e164.substring(4);
+    if (!/^\d{9}$/.test(national)) {
+      return {
+        isValid: false,
+        formatted: e164,
+        error: `Zambian numbers need exactly 9 digits after +260 (you entered ${national.length}). Example: +260 97 1234567 or 097 1234567.`,
+      };
+    }
+    if (!/^(9[5-7]|7[5-7])/.test(national)) {
+      const note = 'This is not a recognised Zambian mobile prefix (95, 96, 97, 75, 76, 77); SMS updates may not be delivered.';
+      warning = warning ? `${warning}. ${note}` : note;
+    }
+    return { isValid: true, formatted: e164, warning };
+  }
+
+  const digitCount = e164.length - 1;
+  if (digitCount < 8 || digitCount > 15) {
+    return { isValid: false, formatted: e164, error: 'International phone numbers must have between 8 and 15 digits including the country code.' };
+  }
+  return { isValid: true, formatted: e164, warning };
+}
+
+// ---------------------------------------------------------------------------
+// Document file validation (type, extension, real content, size, basic quality)
+// ---------------------------------------------------------------------------
+
+export const ALLOWED_DOCUMENT_MIME_TYPES = ['application/pdf', 'image/jpeg', 'image/png'] as const;
+export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+export const MIN_IMAGE_BYTES_FOR_QUALITY = 30 * 1024;
+
+export type DocumentFileIssueCode =
+  | 'MISSING_FILE'
+  | 'UNSUPPORTED_TYPE'
+  | 'EXTENSION_MISMATCH'
+  | 'CONTENT_MISMATCH'
+  | 'EMPTY_FILE'
+  | 'TOO_LARGE'
+  | 'PHOTO_MUST_BE_IMAGE'
+  | 'LOW_QUALITY';
+
+export interface DocumentFileInput {
+  documentType: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  /** data:<mime>;base64,<data> — when present, the real file content is inspected. */
+  dataUrl?: string;
+}
+
+export interface DocumentFileIssue {
+  code: DocumentFileIssueCode;
+  severity: 'error' | 'warning';
+  message: string;
+}
+
+const EXTENSION_MIME: Record<string, string> = {
+  pdf: 'application/pdf',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+};
+
+/** Detect the real file type from the first bytes (magic numbers) of base64 data. */
+export function sniffMimeFromBase64(base64: string): string | undefined {
+  const head = base64.replace(/\s/g, '').substring(0, 16);
+  if (head.startsWith('JVBER')) return 'application/pdf'; // %PDF
+  if (head.startsWith('/9j/')) return 'image/jpeg'; // FF D8 FF
+  if (head.startsWith('iVBORw0KGgo')) return 'image/png'; // 89 50 4E 47
+  return undefined;
+}
+
+export function validateDocumentFile(input: DocumentFileInput): DocumentFileIssue[] {
+  const issues: DocumentFileIssue[] = [];
+  const add = (code: DocumentFileIssueCode, message: string, severity: 'error' | 'warning' = 'error') =>
+    issues.push({ code, severity, message });
+  const label = input.documentType || 'Document';
+
+  let mimeType = input.mimeType?.toLowerCase();
+  let sizeBytes = input.sizeBytes;
+  let sniffed: string | undefined;
+
+  if (input.dataUrl) {
+    const match = input.dataUrl.match(/^data:([^;,]+)?(?:;[^,]*)?;base64,(.*)$/s);
+    if (!match) {
+      add('CONTENT_MISMATCH', `${label}: the uploaded file could not be read. Upload it again as PDF, JPG or PNG.`);
+      return issues;
+    }
+    mimeType = mimeType || match[1]?.toLowerCase();
+    const base64 = match[2].replace(/\s/g, '');
+    const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+    sizeBytes = sizeBytes ?? Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+    sniffed = base64.length ? sniffMimeFromBase64(base64) : undefined;
+  }
+
+  if (!input.dataUrl && !input.fileName && !mimeType) {
+    add('MISSING_FILE', `${label} has not been uploaded.`);
+    return issues;
+  }
+
+  if (sizeBytes !== undefined) {
+    if (sizeBytes === 0) add('EMPTY_FILE', `${label} is an empty file. Scan or photograph the document again and re-upload.`);
+    else if (sizeBytes > MAX_DOCUMENT_BYTES) add('TOO_LARGE', `${label} is larger than 10 MB. Reduce the scan resolution or compress the file and re-upload.`);
+  }
+
+  if (mimeType && !(ALLOWED_DOCUMENT_MIME_TYPES as readonly string[]).includes(mimeType)) {
+    add('UNSUPPORTED_TYPE', `${label} is a ${mimeType} file, which is not accepted. Upload a PDF, JPG or PNG.`);
+  }
+
+  const ext = input.fileName?.split('.').pop()?.toLowerCase();
+  if (input.fileName) {
+    if (!ext || !EXTENSION_MIME[ext]) {
+      add('UNSUPPORTED_TYPE', `${label} ("${input.fileName}") has an unsupported file extension. Upload a .pdf, .jpg or .png file.`);
+    } else if (mimeType && EXTENSION_MIME[ext] !== mimeType && (ALLOWED_DOCUMENT_MIME_TYPES as readonly string[]).includes(mimeType)) {
+      add('EXTENSION_MISMATCH', `${label}: the file name ends in .${ext} but the file is ${mimeType}. Save the file in the correct format and re-upload.`);
+    }
+  }
+
+  if (input.dataUrl && sizeBytes && !sniffed) {
+    add('CONTENT_MISMATCH', `${label}: the file content is not a real PDF, JPG or PNG (it may be renamed or corrupted). Export the scan again and re-upload.`);
+  } else if (sniffed && mimeType && sniffed !== mimeType) {
+    add('CONTENT_MISMATCH', `${label}: the file claims to be ${mimeType} but its content is ${sniffed}. Save the file in the correct format and re-upload.`);
+  }
+
+  const effectiveType = sniffed || mimeType || (ext ? EXTENSION_MIME[ext] : undefined);
+  const isPhoto = /photo/i.test(label) && !/damage/i.test(label);
+  if (isPhoto && effectiveType && !effectiveType.startsWith('image/')) {
+    add('PHOTO_MUST_BE_IMAGE', `${label} must be a JPG or PNG image, not a PDF.`);
+  }
+
+  if (effectiveType?.startsWith('image/') && sizeBytes && sizeBytes > 0 && sizeBytes < MIN_IMAGE_BYTES_FOR_QUALITY) {
+    add('LOW_QUALITY', `${label} is a very small image (${Math.round(sizeBytes / 1024)} KB) and may be too low-resolution to read. Upload a clearer, higher-resolution scan.`, 'warning');
+  }
+
+  return issues;
 }
 
 /**
