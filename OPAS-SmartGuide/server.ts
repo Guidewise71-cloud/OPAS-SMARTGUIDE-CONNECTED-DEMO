@@ -3,6 +3,10 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import type { SimulatedPaymentTransaction } from './persistence.ts';
+import { AI_CONSISTENCY_PROMPT, type AiConsistencyChecker } from './src/server/applicationErrorEngine.ts';
+import { createApplicationValidationHandler, latestValidationResults } from './src/server/applicationValidationRoute.ts';
+
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
