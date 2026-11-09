@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { usePassport } from '../../context/PassportContext';
 import { PersonalDetails, ZambianProvince } from '../../types/passport';
 import { ArrowLeft, ArrowRight, AlertCircle, Sparkles, UserCheck } from 'lucide-react';
-
+import { SmartValidationFixBanner } from '../SmartValidationPanel';
 interface Step2PersonalDetailsProps {
   onNext: () => void;
   onBack: () => void;
@@ -126,6 +126,7 @@ export const Step2PersonalDetails: React.FC<Step2PersonalDetailsProps> = ({ onNe
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
+            <SmartValidationFixBanner referenceNumber={currentApp.referenceNumber} step={3} />
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
