@@ -9,24 +9,27 @@ interface Step3TravelHistoryProps {
 }
 
 export const Step3TravelHistory: React.FC<Step3TravelHistoryProps> = ({ onNext, onBack }) => {
-  const { currentApp, updateCurrentApplication } = usePassport();
+
+const { currentApp, updateCurrentApplication } = usePassport();
+
+  // All hooks run before any early return (Rules of Hooks).
+  const isRenewalOrLost =
+    currentApp?.applicationType === 'RENEWAL' || currentApp?.applicationType === 'REPLACEMENT_LOST';
+  const saved = currentApp?.previousPassportDetails;
+
+  const [details, setDetails] = useState<PreviousPassportDetails>(() => ({
+    hasPreviousPassport: isRenewalOrLost || !!saved?.hasPreviousPassport,
+    passportNumber: saved?.passportNumber || '',
+    issueDate: saved?.issueDate || '',
+    expiryDate: saved?.expiryDate || '',
+    issuingAuthority: saved?.issuingAuthority || 'Zambia Passport Office - Lusaka',
+    lossReason: saved?.lossReason || '',
+    policeReportRef: saved?.policeReportRef || '',
+  }));
+  const [error, setError] = useState<string | null>(null);
 
   if (!currentApp) return null;
 
-  const isRenewalOrLost =
-    currentApp.applicationType === 'RENEWAL' || currentApp.applicationType === 'REPLACEMENT_LOST';
-
-  const [details, setDetails] = useState<PreviousPassportDetails>({
-    hasPreviousPassport: isRenewalOrLost || currentApp.previousPassportDetails.hasPreviousPassport,
-    passportNumber: currentApp.previousPassportDetails.passportNumber || '',
-    issueDate: currentApp.previousPassportDetails.issueDate || '',
-    expiryDate: currentApp.previousPassportDetails.expiryDate || '',
-    issuingAuthority: currentApp.previousPassportDetails.issuingAuthority || 'Zambia Passport Office - Lusaka',
-    lossReason: currentApp.previousPassportDetails.lossReason || '',
-    policeReportRef: currentApp.previousPassportDetails.policeReportRef || '',
-  });
-
-  const [error, setError] = useState<string | null>(null);
 
   const handleNextClick = () => {
     if (isRenewalOrLost && !details.passportNumber?.trim()) {
