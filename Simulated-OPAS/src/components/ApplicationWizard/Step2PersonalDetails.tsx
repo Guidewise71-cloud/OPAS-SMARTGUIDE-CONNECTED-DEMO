@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
-import { SmartValidationFixBanner } from '../SmartValidationPanel'
-
 import { usePassport } from '../../context/PassportContext';
-import { PersonalDetails, ZambianProvince } from '../../types/passport';
+import type { PersonalDetails, ZambianProvince } from '../../types/passport';
 import { ArrowLeft, ArrowRight, AlertCircle, Sparkles, UserCheck } from 'lucide-react';
 import { SmartValidationFixBanner } from '../SmartValidationPanel';
+
 interface Step2PersonalDetailsProps {
   onNext: () => void;
   onBack: () => void;
@@ -25,6 +24,12 @@ const PROVINCES: ZambianProvince[] = [
 
 export const Step2PersonalDetails: React.FC<Step2PersonalDetailsProps> = ({ onNext, onBack }) => {
   const { currentApp, updateCurrentApplication } = usePassport();
+
+  // All hooks run before any early return (Rules of Hooks).
+  const [formData, setFormData] = useState<PersonalDetails>(
+    () => (currentApp?.personalDetails ?? {}) as PersonalDetails
+  );
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   if (!currentApp) return null;
 
@@ -128,7 +133,7 @@ export const Step2PersonalDetails: React.FC<Step2PersonalDetailsProps> = ({ onNe
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
-            <SmartValidationFixBanner referenceNumber={currentApp.referenceNumber} step={3} />
+                <SmartValidationFixBanner referenceNumber={currentApp.referenceNumber} step={2} />
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
