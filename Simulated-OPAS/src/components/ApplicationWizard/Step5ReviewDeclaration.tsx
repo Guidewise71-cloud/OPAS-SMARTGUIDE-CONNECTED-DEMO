@@ -59,6 +59,7 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
+      <SmartValidationFixBanner referenceNumber={currentApp.referenceNumber} step={2} />
       <div>
         <div className="flex items-center justify-between">
           <div>
