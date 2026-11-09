@@ -603,7 +603,7 @@ function opasPaymentApiPlugin(apiKey: string, oidcIssuer: string, oidcAudience: 
               const apps = Array.isArray(data.applications) ? data.applications : [];
               for (const app of apps) {
                 if (!app.applicationReference) continue;
-                const record = {
+                 const record: (typeof opasApplicationStatuses)[number] = {
                   applicationReference: String(app.applicationReference),
                   applicationStatus: String(app.applicationStatus || 'DRAFT'),
                   paymentStatus: String(app.paymentStatus || 'UNPAID'),
