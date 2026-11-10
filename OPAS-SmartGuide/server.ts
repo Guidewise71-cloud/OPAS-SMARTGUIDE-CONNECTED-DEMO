@@ -1,4 +1,4 @@
-import type { UserAccount } from './src/types/auth.ts';
+
 import express from 'express';
 import http from 'http';
 import path from 'path';
@@ -13,6 +13,7 @@ import { GoogleGenAI } from '@google/genai';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { INITIAL_APPLICATIONS } from './src/data/mockApplications.ts';
 import { INITIAL_USERS } from './src/data/mockUsers.ts';
+import type { UserAccount } from './src/types/auth.ts';
 import { isRegisteredSimulatedApplicant } from './src/utils/simulatedApplicantAuth.ts';
 import { detectReminderCandidates } from './src/utils/reminderRules.ts';
 import { ApplicationStatus, NotificationLog, PassportApplication } from './src/types/passport.ts';
@@ -1246,6 +1247,8 @@ type SimulatedApplicationStatus = {
   applicationReference: string;
   applicationStatus: string;
   submissionStatus: 'SUBMITTED' | 'NOT_SUBMITTED';
+    INCOMPLETE: 'Incomplete',
+  INVALID_CONTACT_DETAILS: 'Invalid Contact Details',
 };
 
 const APPLICATION_STATUS_FROM_API: Record<string, ApplicationStatus> = {
