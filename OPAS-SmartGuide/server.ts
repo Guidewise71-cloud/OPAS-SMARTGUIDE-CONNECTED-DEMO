@@ -321,7 +321,28 @@ sync function fetchSimulatedOpasApi(apiPath: string, init: RequestInit = {}) {
   });
   // ...rest unchanged
 }
+const simulatedCitizens = new Map<string, UserAccount>();
 
+function findActiveUser(id: string, role?: string) {
+  const u = INITIAL_USERS.find((x) => x.id === id && x.status === 'ACTIVE') || simulatedCitizens.get(id);
+  return u && u.status === 'ACTIVE' && (!role || u.role === role) ? u : undefined;
+}
+
+async function authenticateSimulatedApplicant(identifier: string, password: string): Promise<UserAccount | undefined> {
+  if (!identifier || !password) return undefined;
+  try {
+    const payload = await fetchSimulatedOpasApi('/api/identity/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ identifier, password }),
+    });
+    const a = payload?.applicant || payload?.user; // shape unverified
+    if (!a) return undefined;
+    const user = { id: `sim-${a.id}`, role: 'citizen', status: 'ACTIVE', fullName: a.fullName || a.name, email: a.email, nrcNumber: a.nrcNumber } as UserAccount;
+    simulatedCitizens.set(user.id, user);
+    return user;
+  } catch { return undefined; }
+}
 const simulatedCitizens = new Map<string, UserAccount>();
 const findActiveUser = (id: string, role?: string) =>
   INITIAL_USERS.find(u => u.id === id && u.status === 'ACTIVE' && (!role || u.role === role))
@@ -1316,7 +1337,7 @@ app.post(['/api/integration/applications', '/api/integration/opas/applications']
     const fullName = String(data.applicantName || 'Simulated OPAS Applicant');
     const nrc = String(data.nrcNumber || '000000/00/0');
     const statusText = String(data.applicationStatus || 'DRAFT').toUpperCase();
-    const status: ApplicationStatus = existing?.status || 'Draft';
+ 
     const contact = {
       phone: String(data.phone || ''), phoneCountryCode: '+260', email: String(data.email || ''),
       residentialAddress: '', district: '', province: 'Lusaka', whatsappNumber: '', whatsappOptIn: false, whatsappVerified: false,
