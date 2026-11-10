@@ -308,6 +308,23 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number = 25000): P
   }
 }
 
+
+sync function fetchSimulatedOpasApi(apiPath: string, init: RequestInit = {}) {
+  // ...existing guards unchanged...
+  const response = await fetch(target, {
+    method: 'GET',
+    headers: { Accept: 'application/json', ...(init.headers as object) },
+    signal: AbortSignal.timeout(5000),
+    ...init,
+  });
+  // ...rest unchanged
+}
+
+const simulatedCitizens = new Map<string, UserAccount>();
+const findActiveUser = (id: string, role?: string) =>
+  INITIAL_USERS.find(u => u.id === id && u.status === 'ACTIVE' && (!role || u.role === role))
+  || simulatedCitizens.get(id);
+
 // Official MoHAIS Passport Regulations & Operational System Prompt
 const MOHAIS_SYSTEM_PROMPT = `You are an AI guidance assistant for a Zambia passport-service prototype. You are not an official MoHAIS representative, and this application is not connected to the government OPAS system. Treat any application information in the supplied context as simulated demo data, never as a live government record. Be respectful, clear, and careful about uncertainty. Do not claim that information is official or current unless you can verify it with an available source.
 
@@ -2214,5 +2231,7 @@ async function startServer() {
     console.log(`MoHAIS OPAS Intelligence Server running on port ${PORT}`);
   });
 }
+
+
 
 startServer();
