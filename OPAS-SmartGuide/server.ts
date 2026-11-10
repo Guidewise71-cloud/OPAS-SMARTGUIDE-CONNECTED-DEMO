@@ -2233,6 +2233,10 @@ async function startServer() {
   });
 }
 
-
+const mapped = APPLICATION_STATUS_FROM_API[statusText];
+const protectedStates: ApplicationStatus[] = ['Paid - Unsubmitted', 'Submitted - Under Review', 'Reverted'];
+const status: ApplicationStatus =
+  existing && protectedStates.includes(existing.status) ? existing.status
+  : mapped ?? existing?.status ?? 'Draft';
 
 startServer();
