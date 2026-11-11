@@ -7,6 +7,7 @@ export interface ReminderRule {
   label: string;
   statuses: PassportApplication['status'][];
   inactiveDays: number;
+  escalationDays?: number[];
   cooldownDays: number;
   maximumReminders: number;
   channelPriority: ReminderChannel[];
