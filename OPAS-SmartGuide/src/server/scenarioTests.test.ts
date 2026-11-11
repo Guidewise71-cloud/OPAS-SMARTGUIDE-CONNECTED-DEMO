@@ -123,15 +123,32 @@ describe('scenario: reverted application', () => {
     expect(late.application).toBeUndefined();
   });
 
-  it('currently treats SUBMITTED on a reverted application as a no-op (known gap: status stays Reverted)', () => {
+  it('moves a reverted application to Submitted - Under Review when OPAS reports resubmission', () => {
     const first = revert(paidState());
     const resubmitted = processApplicationEvent(
       { applicationReference: REF, applicationStatus: 'SUBMITTED', occurredAt: '2026-11-10T09:00:00.000Z' },
       { applications: [first.application!], transactions: paidState().transactions, rules: DEFAULT_REMINDER_RULES, now: new Date('2026-11-10T09:00:00.000Z') },
     );
-    // Reverted counts as submitted in isSubmitted(), so the resubmission is acknowledged but the record is not updated.
     expect(resubmitted.httpStatus).toBe(200);
-    expect(resubmitted.body.unchanged).toBe(true);
-    expect(resubmitted.application).toBeUndefined();
+    expect(resubmitted.body.unchanged).toBeUndefined();
+    expect(resubmitted.body.remindersStopped).toBe(true);
+    expect(resubmitted.application?.status).toBe('Submitted - Under Review');
+    expect(resubmitted.application?.daysInStatus).toBe(0);
+    expect(resubmitted.event.outcome).toBe('ACCEPTED');
+    expect(typeof resubmitted.body.cancelledPendingReminders).toBe('number');
+  });
+
+  it('still ignores a repeated SUBMITTED event once the application is under review', () => {
+    const first = revert(paidState());
+    const once = processApplicationEvent(
+      { applicationReference: REF, applicationStatus: 'SUBMITTED', occurredAt: '2026-11-10T09:00:00.000Z' },
+      { applications: [first.application!], transactions: paidState().transactions, rules: DEFAULT_REMINDER_RULES, now: new Date('2026-11-10T09:00:00.000Z') },
+    );
+    const twice = processApplicationEvent(
+      { applicationReference: REF, applicationStatus: 'SUBMITTED', occurredAt: '2026-11-10T09:05:00.000Z' },
+      { applications: [once.application!], transactions: paidState().transactions, rules: DEFAULT_REMINDER_RULES, now: new Date('2026-11-10T09:05:00.000Z') },
+    );
+    expect(twice.body.unchanged).toBe(true);
+    expect(twice.event.outcome).toBe('DUPLICATE_IGNORED');
   });
 });
