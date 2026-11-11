@@ -7,6 +7,7 @@ import {
   validateApplicationValidationRequest,
   type AiConsistencyChecker,
   type ApplicationValidationResult,
+  type ApplicationValidationIssue,
 } from './applicationErrorEngine.ts';
 
 export interface ValidationRouteOptions {
@@ -18,6 +19,33 @@ export interface ValidationRouteOptions {
 
 /** Latest result per application reference (for the SmartGuide Smart Validation view). */
 export const latestValidationResults = new Map<string, ApplicationValidationResult>();
+
+export interface ValidationComparison {
+  previousValidatedAt: string | null;
+  resolvedIssues: ApplicationValidationIssue[];
+  newIssues: ApplicationValidationIssue[];
+  remainingIssues: ApplicationValidationIssue[];
+}
+
+const issueKey = (i: ApplicationValidationIssue) => `${i.code}|${i.field}`;
+
+/** Compare a new result with the previously stored one for the same application. */
+export function compareValidationResults(
+  previous: ApplicationValidationResult | undefined,
+  current: ApplicationValidationResult,
+): ValidationComparison {
+  if (!previous) {
+    return { previousValidatedAt: null, resolvedIssues: [], newIssues: [], remainingIssues: [] };
+  }
+  const prevKeys = new Set(previous.issues.map(issueKey));
+  const currKeys = new Set(current.issues.map(issueKey));
+  return {
+    previousValidatedAt: previous.validatedAt,
+    resolvedIssues: previous.issues.filter(i => !currKeys.has(issueKey(i))),
+    newIssues: current.issues.filter(i => !prevKeys.has(issueKey(i))),
+    remainingIssues: current.issues.filter(i => prevKeys.has(issueKey(i))),
+  };
+}
 
 export function createApplicationValidationHandler(options: ValidationRouteOptions) {
   return async (req: Request, res: Response) => {
@@ -35,9 +63,10 @@ export function createApplicationValidationHandler(options: ValidationRouteOptio
         now: options.now?.(),
         aiChecker: options.getAiChecker?.(),
       });
+      const comparison = compareValidationResults(latestValidationResults.get(result.applicationReference), result);
       latestValidationResults.set(result.applicationReference, result);
       await options.onResult?.(result);
-      return res.json({ success: true, result });
+      return res.json({ success: true, result, comparison });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: `Validation engine failed: ${error?.message || 'unknown error'}` });
     }
