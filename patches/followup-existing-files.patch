@@ -1,0 +1,728 @@
+diff --git a/OPAS-SmartGuide/.env.example b/OPAS-SmartGuide/.env.example
+index 179830f..1947627 100644
+--- a/OPAS-SmartGuide/.env.example
++++ b/OPAS-SmartGuide/.env.example
+@@ -42,2 +42,19 @@ NOTIFICATION_FROM_EMAIL=""
+ ASSISTANT_API_URL="https://<free-url-from-the-Domains-page>/api/assistant"
+ ASSISTANT_API_KEY="GUIDEWISE"
++
++# ---------------------------------------------------------------------------
++# Reminders for reverted and paid-but-unsubmitted applications
++# ---------------------------------------------------------------------------
++# Public OPAS address used in reminder deep links (opens the exact application and field to fix).
++OPAS_PUBLIC_URL="http://localhost:3000"
++# How often the background reminder scheduler wakes up (minutes, minimum 5). Each rule's cooldown
++# still limits how often one applicant is reminded.
++REMINDER_INTERVAL_MINUTES="60"
++# Optional Twilio delivery receipts (point to the n8n "SMS Delivery Receipt" webhook or your own handler).
++TWILIO_STATUS_CALLBACK_URL=""
++# n8n "OPAS Reminder Engine" status webhook. When set, n8n sends the SMS/email reminders (with delivery
++# tracking, fallback and officer escalation) and this server only posts OPAS Message Board copies.
++# Leave empty to send SMS/email directly from this server with Twilio/Resend.
++N8N_REMINDER_WEBHOOK_URL=""
++# Optional: signs requests to n8n with X-OPAS-Timestamp / X-OPAS-Signature (HMAC-SHA256 of "timestamp.body").
++N8N_REMINDER_WEBHOOK_SECRET=""
+diff --git a/OPAS-SmartGuide/server.ts b/OPAS-SmartGuide/server.ts
+index 00eb336..05d2356 100644
+--- a/OPAS-SmartGuide/server.ts
++++ b/OPAS-SmartGuide/server.ts
+@@ -46,4 +46,7 @@ import {
+ } from './src/server/persistence.ts';
+ import { fetchResendDeliveryState, isEmailTestMode, isResendConfigured, sendEmailViaResend } from './src/server/resendEmail.ts';
++import { createFollowup } from './src/server/followup.ts';
++import { initializeHandoverStore } from './src/server/handoverStore.ts';
++import { isReminderEngineConfigured, isTwilioConfigured } from './src/server/reminderDispatch.ts';
+ import {
+   verifyOpasSignature, validatePaymentEvent, validateApplicationEvent,
+@@ -1223,4 +1226,14 @@ function getDeterministicNotification(applicantName: string, trackingNumber: str
+ let reminderApplications: PassportApplication[] = [];
+ let reminderRules = [] as Awaited<ReturnType<typeof loadReminderRules>>;
++// Reminders, deep links, confirmed resubmission and live officer handover (src/server/followup.ts).
++const followup = createFollowup({
++  users: INITIAL_USERS,
++  getApplications: () => reminderApplications,
++  replaceApplication: (updated) => { reminderApplications = reminderApplications.map((a) => (a.id === updated.id ? updated : a)); },
++  saveApplication,
++  getSession: (req) => getSessionFromRequest(req),
++  requireStaff: (...roles) => requireStaff(...roles) as unknown as express.RequestHandler,
++  findApplicantAccount: (application) => findApplicantAccount(application),
++});
+ let simulatedPaymentTransactions: SimulatedPaymentTransaction[] = [];
+ 
+@@ -1292,4 +1305,5 @@ app.post(['/api/integration/applications', '/api/integration/opas/applications']
+     if (!ref) continue;
+     const existing = reminderApplications.find(a => a.trackingNumber === ref);
++    const previousStatus = existing?.status;
+     const now = new Date().toISOString();
+     const fullName = String(data.applicantName || 'Simulated OPAS Applicant');
+@@ -1322,4 +1336,6 @@ app.post(['/api/integration/applications', '/api/integration/opas/applications']
+       if (lifecycle.application) { await saveApplication(lifecycle.application); reminderApplications = reminderApplications.map(a => a.id === lifecycle.application!.id ? lifecycle.application! : a); }
+     }
++    const finalRecord = reminderApplications.find(a => a.trackingNumber === ref);
++    if (finalRecord) followup.afterStatusChange(previousStatus, finalRecord, data.officerComment ? String(data.officerComment) : undefined);
+     created.push(ref);
+   }
+@@ -1332,4 +1348,5 @@ app.post(['/api/integration/payment-events', '/api/integration/opas/payment-even
+   const validated = validatePaymentEvent(req.body);
+   if (!validated.ok) return res.status(400).json({ success: false, errors: validated.errors });
++  const paymentPreviousStatus = reminderApplications.find(x => x.trackingNumber === validated.value.applicationReference)?.status;
+   const result = processPaymentEvent(validated.value, {
+     applications: reminderApplications, transactions: simulatedPaymentTransactions, rules: reminderRules, now: new Date(),
+@@ -1343,4 +1360,5 @@ app.post(['/api/integration/payment-events', '/api/integration/opas/payment-even
+     await saveApplication(result.application);
+     reminderApplications = reminderApplications.map(x => x.id === result.application!.id ? result.application! : x);
++    followup.afterStatusChange(paymentPreviousStatus, result.application);
+   }
+   if (result.body.returnInstructions && result.application) {
+@@ -1363,15 +1381,27 @@ app.post(['/api/integration/application-events', '/api/integration/opas/applicat
+   const validated = validateApplicationEvent(req.body);
+   if (!validated.ok) return res.status(400).json({ success: false, errors: validated.errors });
++  const eventPreviousStatus = reminderApplications.find(x => x.trackingNumber === validated.value.applicationReference)?.status;
+   const result = processApplicationEvent(validated.value, {
+     applications: reminderApplications, transactions: simulatedPaymentTransactions, rules: reminderRules, now: new Date(),
+   });
+   saveIntegrationEvent(result.event as unknown as Record<string, unknown>);
++  let reminderEvent: ReturnType<typeof followup.afterStatusChange> = null;
+   if (result.application) {
+-    await saveApplication(result.application);
+-    reminderApplications = reminderApplications.map(x => x.id === result.application!.id ? result.application! : x);
+-  }
+-  return res.status(result.httpStatus).json(result.body);
++    const officerComment = validated.value.officerComment;
++    const updated: PassportApplication = result.application.status === 'Reverted' && officerComment
++      ? { ...result.application, reversionReason: officerComment, revertedAt: result.application.lastUpdated, waitingForApplicantSince: result.application.lastUpdated }
++      : result.application;
++    await saveApplication(updated);
++    reminderApplications = reminderApplications.map(x => x.id === updated.id ? updated : x);
++    reminderEvent = followup.afterStatusChange(eventPreviousStatus, updated, officerComment);
++  }
++  const confirmation = reminderEvent === 'RESUBMITTED' || reminderEvent === 'SUBMITTED'
++    ? { resubmitted: reminderEvent === 'RESUBMITTED', confirmedAt: new Date().toISOString(), confirmationNumber: `SG-ACK-${validated.value.applicationReference}-${Date.now().toString(36).toUpperCase()}` }
++    : undefined;
++  return res.status(result.httpStatus).json({ ...result.body, ...(confirmation ? { confirmation } : {}) });
+ });
+ 
++followup.registerRoutes(app);
++
+ // Application Error Detection Engine: Simulated OPAS sends the full application before Review/Payment.
+ function getApplicationAiChecker(): AiConsistencyChecker | undefined {
+@@ -1749,52 +1779,7 @@ const reminderSchedulerAudit: Array<{
+ 
+ async function runAutomatedReminderCycle(source: 'STARTUP' | 'SCHEDULED_24H' | 'MANUAL') {
+-  const now = new Date();
+-  const candidates = detectReminderCandidates(reminderApplications, reminderRules, now);
+-
+-  for (const candidate of candidates) {
+-    const { application, channel, reason } = candidate;
+-    const notification: NotificationLog = {
+-      id: `scheduled-${now.getTime()}-${application.id}`,
+-      timestamp: now.toISOString(),
+-      channel,
+-      subject: 'MoHAIS OPAS Reminder: Action Required',
+-      content:
+-        application.status === 'Reverted'
+-          ? `MoHAIS OPAS: Dear ${application.fullName}, your application #${application.trackingNumber} requires correction. Please log in to OPAS within 24 hours to take action.`
+-          : application.status === 'Paid - Unsubmitted'
+-          ? `MoHAIS OPAS: Dear ${application.fullName}, payment has been received for #${application.trackingNumber}. Please complete your application submission within 24 hours.`
+-          : `MoHAIS OPAS: Dear ${application.fullName}, your passport application #${application.trackingNumber} is incomplete. Please log in to OPAS within 24 hours to continue.`,
+-      deliveryStatus: 'Sent',
+-      auditId: `AUD-SCHEDULED-${now.getTime()}-${application.id}`,
+-      trigger: 'AUTOMATED_WORKFLOW',
+-      dispatchedBy: { userId: 'opas-reminder-scheduler', name: 'OPAS 24-Hour Reminder Scheduler', role: 'system' },
+-      deliveryUpdatedAt: now.toISOString(),
+-      auditTrail: [{
+-        id: `evt-scheduled-${now.getTime()}-${application.id}`,
+-        timestamp: now.toISOString(),
+-        event: 'DISPATCHED',
+-        actor: 'OPAS 24-Hour Reminder Scheduler',
+-        details: `${source} cycle queued ${channel} reminder. ${reason}`,
+-      }],
+-    };
+-
+-    application.notifications.unshift(notification);
+-    application.lastUpdated = now.toISOString();
+-    await saveApplication(application);
+-    reminderSchedulerAudit.unshift({
+-      id: `run-${now.getTime()}-${application.id}`,
+-      timestamp: now.toISOString(),
+-      source,
+-      applicationId: application.id,
+-      trackingNumber: application.trackingNumber,
+-      channel,
+-      outcome: 'QUEUED',
+-      reason,
+-    });
+-  }
+-
+-  const summary = { ranAt: now.toISOString(), source, eligible: candidates.length, queued: candidates.length };
+-  await saveReminderRun(summary);
+-  return summary;
++  // Real delivery (Twilio SMS -> Resend email -> OPAS Message Board fallback), or Message Board only when the
++  // n8n reminder engine owns SMS/email. See src/server/followup.ts.
++  return followup.runReminderCycle(source, reminderRules, reminderSchedulerAudit);
+ }
+ 
+@@ -1947,5 +1932,7 @@ app.get('/api/notifications/bulk/runs', requireStaff('admin'), (_req, res) => {
+ });
+ 
+-const REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
++// The scheduler wakes every REMINDER_INTERVAL_MINUTES (default 60); rule cooldowns still limit each applicant.
++const REMINDER_INTERVAL_MINUTES = Math.max(5, Number(process.env.REMINDER_INTERVAL_MINUTES) || 60);
++const REMINDER_INTERVAL_MS = REMINDER_INTERVAL_MINUTES * 60 * 1000;
+ 
+ // Preview and scheduler audit endpoints support dashboard integration. These
+@@ -1954,5 +1941,5 @@ app.get('/api/reminders/preview', requireStaff('officer', 'admin'), (_req, res)
+   const candidates = detectReminderCandidates(reminderApplications);
+   res.json({
+-    cadence: '24 hours',
++    cadence: `every ${REMINDER_INTERVAL_MINUTES} min, per-applicant rule cooldown`, delegatedToN8n: isReminderEngineConfigured(),
+     candidates: candidates.map(({ application, channel, reason, rule }) => ({
+       applicationId: application.id,
+@@ -1968,5 +1955,5 @@ app.get('/api/reminders/preview', requireStaff('officer', 'admin'), (_req, res)
+ 
+ app.get('/api/reminders/audit', requireStaff('officer', 'admin'), (_req, res) => {
+-  res.json({ cadence: '24 hours', records: reminderSchedulerAudit.slice(0, 100) });
++  res.json({ cadence: `every ${REMINDER_INTERVAL_MINUTES} min, per-applicant rule cooldown`, delegatedToN8n: isReminderEngineConfigured(), records: reminderSchedulerAudit.slice(0, 100) });
+ });
+ 
+@@ -1980,5 +1967,6 @@ app.get('/api/notifications/providers/status', requireStaff('admin'), (_req, res
+   res.json({
+     whatsapp: Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID),
+-    sms: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER),
++    sms: isTwilioConfigured(),
++    reminderEngine: isReminderEngineConfigured(),
+     email: isResendConfigured(),
+     emailTestMode: isEmailTestMode(),
+@@ -2189,13 +2177,14 @@ app.get('/api/responsible-ai/accuracy-tests', async (_req, res) => {
+ async function startServer() {
+   await initializePersistence();
++  initializeHandoverStore();
+   reminderApplications = await loadApplications(INITIAL_APPLICATIONS);
+   simulatedPaymentTransactions = await loadSimulatedPaymentTransactions(reminderApplications);
+   reminderRules = await loadReminderRules();
+   const startupSummary = await runAutomatedReminderCycle('STARTUP');
+-  console.log(`OPAS reminder persistence initialized: ${startupSummary.queued} reminder(s) queued.`);
++  console.log(`OPAS reminders: ${startupSummary.eligible} due, ${startupSummary.sent} sent, ${startupSummary.failed} failed. Background check every ${REMINDER_INTERVAL_MINUTES} min; SMS/email ${isReminderEngineConfigured() ? 'delegated to the n8n reminder engine' : 'sent directly'}.`);
+   setInterval(() => {
+     void runAutomatedReminderCycle('SCHEDULED_24H').then((summary) => {
+-      console.log(`OPAS 24-hour reminder cycle completed: ${summary.queued} reminder(s) queued.`);
+-    });
++      console.log(`OPAS reminder cycle: ${summary.eligible} due, ${summary.sent} sent, ${summary.failed} failed.`);
++    }).catch((error) => console.error('OPAS reminder cycle failed:', error));
+   }, REMINDER_INTERVAL_MS).unref();
+ 
+diff --git a/OPAS-SmartGuide/src/App.tsx b/OPAS-SmartGuide/src/App.tsx
+index 8de4993..3b31116 100644
+--- a/OPAS-SmartGuide/src/App.tsx
++++ b/OPAS-SmartGuide/src/App.tsx
+@@ -165,4 +165,16 @@ function AppContent({
+     }
+ 
++    // Staff reverts/submissions are persisted on the server so the reminder engine starts or stops.
++    // Applicant resubmissions are confirmed by CitizenPortal itself before it calls this handler.
++    if (currentUser && currentUser.role !== 'citizen' && targetApplication && (newStatus === 'Reverted' || newStatus === 'Submitted - Under Review')) {
++      void fetch('/api/applications/status-events', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
++        body: JSON.stringify({ applicationReference: targetApplication.trackingNumber, status: newStatus, note: notes || '' }),
++      }).then(async (response) => {
++        if (!response.ok) console.warn('OPAS: status change was not saved on the server.', await response.json().catch(() => ({})));
++      }).catch((error) => console.warn('OPAS: status change could not reach the server.', error));
++    }
++
+     setApplications((prev) =>
+       prev.map((app) => {
+@@ -172,4 +184,5 @@ function AppContent({
+             status: newStatus,
+             officerNotes: notes || app.officerNotes,
++            ...(newStatus === 'Reverted' && notes ? { reversionReason: notes } : {}),
+             daysInStatus: 0,
+             lastUpdated: new Date().toISOString(),
+diff --git a/OPAS-SmartGuide/src/components/citizen/AIGuidanceChat.tsx b/OPAS-SmartGuide/src/components/citizen/AIGuidanceChat.tsx
+index d3b1417..5f68192 100644
+--- a/OPAS-SmartGuide/src/components/citizen/AIGuidanceChat.tsx
++++ b/OPAS-SmartGuide/src/components/citizen/AIGuidanceChat.tsx
+@@ -22,4 +22,5 @@ import {
+ } from 'lucide-react';
+ import { useChat } from '../../context/ChatContext';
++import { LiveOfficerHandover } from './LiveOfficerHandover';
+ 
+ interface AIGuidanceChatProps {
+@@ -412,4 +413,10 @@ export const AIGuidanceChat: React.FC<AIGuidanceChatProps> = ({
+       </div>
+ 
++      {/* Live handover to a passport officer */}
++      <LiveOfficerHandover
++        transcript={messages.slice(-12).map((m) => ({ role: m.sender === 'user' ? 'user' : 'assistant', text: String(m.text || '') }))}
++        applicationReference={activeApplication?.trackingNumber}
++      />
++
+       {/* Quick Questions Chips */}
+       <div className="p-2 bg-white border-t border-slate-100 overflow-x-auto whitespace-nowrap flex gap-1.5 scrollbar-thin">
+diff --git a/OPAS-SmartGuide/src/components/citizen/CitizenPortal.tsx b/OPAS-SmartGuide/src/components/citizen/CitizenPortal.tsx
+index 7b92ea5..9e9940c 100644
+--- a/OPAS-SmartGuide/src/components/citizen/CitizenPortal.tsx
++++ b/OPAS-SmartGuide/src/components/citizen/CitizenPortal.tsx
+@@ -417,4 +417,6 @@ export const CitizenPortal: React.FC<CitizenPortalProps> = ({
+   const [reuploading, setReuploading] = useState(false);
+   const [reuploadSuccess, setReuploadSuccess] = useState(false);
++  const [resubmitConfirmation, setResubmitConfirmation] = useState<{ reference: string; confirmationNumber?: string; confirmedAt: string; alreadySubmitted?: boolean } | null>(null);
++  const [resubmitError, setResubmitError] = useState('');
+   const [aiDocScore, setAiDocScore] = useState<number | null>(null);
+ 
+@@ -525,14 +527,40 @@ export const CitizenPortal: React.FC<CitizenPortalProps> = ({
+   }, [chatMessages, isBotTyping]);
+ 
+-  const handleSimulateReupload = () => {
++  // The applicant only sees "resubmitted" after the server has saved the change. Otherwise they get a
++  // clear NOT-resubmitted message, so nobody believes they resubmitted when the system says they did not.
++  const handleSimulateReupload = async () => {
++    if (!activeRevertedApp || reuploading) return;
+     setReuploading(true);
+-    setTimeout(() => {
+-      setReuploading(false);
++    setResubmitError('');
++    try {
++      const response = await fetch('/api/applications/status-events', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
++        body: JSON.stringify({
++          applicationReference: activeRevertedApp.trackingNumber,
++          status: 'Submitted - Under Review',
++          note: 'Citizen re-uploaded corrected high-resolution photo and certified NRC copy.',
++        }),
++      });
++      const data = await response.json().catch(() => ({}));
++      if (!response.ok || data.success !== true) {
++        throw new Error(typeof data.error === 'string' ? data.error : `The server answered ${response.status}.`);
++      }
+       setAiDocScore(96);
++      setResubmitConfirmation({
++        reference: activeRevertedApp.trackingNumber,
++        confirmationNumber: data.confirmationNumber,
++        confirmedAt: data.confirmedAt || new Date().toISOString(),
++        alreadySubmitted: Boolean(data.unchanged),
++      });
+       setReuploadSuccess(true);
+-      if (activeRevertedApp) {
++      if (!data.unchanged) {
+         onUpdateStatus(activeRevertedApp.id, 'Submitted - Under Review', 'Citizen re-uploaded corrected high-resolution photo and certified NRC copy.');
+       }
+-    }, 1200);
++    } catch (error) {
++      setResubmitError(error instanceof Error ? error.message : 'Unknown error.');
++    } finally {
++      setReuploading(false);
++    }
+   };
+ 
+@@ -2508,4 +2536,6 @@ export const CitizenPortal: React.FC<CitizenPortalProps> = ({
+                   setReuploadSuccess(false);
+                   setAiDocScore(null);
++                  setResubmitConfirmation(null);
++                  setResubmitError('');
+                 }}
+                 className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
+@@ -2527,10 +2557,25 @@ export const CitizenPortal: React.FC<CitizenPortalProps> = ({
+ 
+             {reuploadSuccess ? (
+-              <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-4 text-center space-y-2">
+-                <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto" />
+-                <p className="font-bold text-emerald-900 text-sm">Corrected Document Validated & Resubmitted!</p>
+-                <p className="text-xs text-emerald-700">
+-                  AI Optical Verification Score: <span className="font-bold text-emerald-900">{aiDocScore}%</span> (Passed MoHAIS Standards)
++              <div role="status" aria-live="polite" className="bg-emerald-50 border-2 border-emerald-400 rounded-xl p-4 text-center space-y-2">
++                <CheckCircle2 className="w-10 h-10 text-emerald-600 mx-auto" />
++                <p className="font-black text-emerald-900 text-base">
++                  {resubmitConfirmation?.alreadySubmitted ? 'ALREADY SUBMITTED' : 'RESUBMITTED SUCCESSFULLY'}
+                 </p>
++                <p className="text-xs text-emerald-900">
++                  {resubmitConfirmation?.alreadySubmitted
++                    ? 'This application is already in the review queue. You do not need to submit it again.'
++                    : 'Your corrected application is saved and back in the review queue. You do not need to resubmit again. Reminders have stopped.'}
++                </p>
++                <div className="text-[11px] text-emerald-800 bg-white/70 rounded-lg p-2 text-left space-y-0.5">
++                  <p><strong>Application:</strong> {resubmitConfirmation?.reference}</p>
++                  {resubmitConfirmation?.confirmationNumber && <p><strong>Confirmation number:</strong> {resubmitConfirmation.confirmationNumber}</p>}
++                  <p><strong>Received:</strong> {resubmitConfirmation ? new Date(resubmitConfirmation.confirmedAt).toLocaleString() : ''}</p>
++                </div>
++                <p className="text-[11px] text-emerald-700">Keep the confirmation number. A copy is in your OPAS messages.</p>
++                {aiDocScore !== null && (
++                  <p className="text-[11px] text-emerald-700">
++                    AI document pre-check score: <span className="font-bold text-emerald-900">{aiDocScore}%</span>
++                  </p>
++                )}
+                 <button
+                   onClick={() => {
+@@ -2545,4 +2590,11 @@ export const CitizenPortal: React.FC<CitizenPortalProps> = ({
+             ) : (
+               <div className="space-y-3">
++                {resubmitError && (
++                  <div role="alert" className="bg-red-50 border-2 border-red-400 rounded-xl p-3 text-xs text-red-900 space-y-1">
++                    <p className="font-black text-sm">NOT RESUBMITTED</p>
++                    <p>Your application was NOT resubmitted and is still waiting for your corrections. Please try again. If it keeps failing, use "Talk to an officer" in the assistant.</p>
++                    <p className="text-[11px] text-red-700">Reason: {resubmitError}</p>
++                  </div>
++                )}
+                 <div className="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-6 text-center bg-slate-50 transition-colors">
+                   <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+@@ -2560,5 +2612,5 @@ export const CitizenPortal: React.FC<CitizenPortalProps> = ({
+                       </>
+                     ) : (
+-                      <span>Select File & Pre-Validate</span>
++                      <span>{resubmitError ? 'Try resubmitting again' : 'Select File, Pre-Validate & Resubmit'}</span>
+                     )}
+                   </button>
+diff --git a/OPAS-SmartGuide/src/components/officer/OfficerDashboard.tsx b/OPAS-SmartGuide/src/components/officer/OfficerDashboard.tsx
+index e85a9e4..2265807 100644
+--- a/OPAS-SmartGuide/src/components/officer/OfficerDashboard.tsx
++++ b/OPAS-SmartGuide/src/components/officer/OfficerDashboard.tsx
+@@ -55,4 +55,5 @@ import { isApplicationSubmitted } from '../../utils/applicationStatus';
+ import { PilotEvaluationReport } from './PilotEvaluationReport';
+ import { ActionQueueTab } from './ActionQueueTab';
++import { LiveHelpQueue } from './LiveHelpQueue';
+ import { ExecutiveReportModal } from './ExecutiveReportModal';
+ import { calculateActionQueueSummary, buildActionQueue } from '../../utils/actionQueue';
+@@ -1564,4 +1565,5 @@ export const OfficerDashboard: React.FC<OfficerDashboardProps> = ({
+         {activeTab === 'action-queue' && (
+           <div className="bg-[#20293a] border border-[#33425a] rounded-2xl p-4 sm:p-6 shadow-sm">
++            <LiveHelpQueue />
+             <ActionQueueTab
+               applications={applications}
+diff --git a/OPAS-SmartGuide/src/components/officer/PaymentSubmissionMonitor.tsx b/OPAS-SmartGuide/src/components/officer/PaymentSubmissionMonitor.tsx
+index f251e90..d172606 100644
+--- a/OPAS-SmartGuide/src/components/officer/PaymentSubmissionMonitor.tsx
++++ b/OPAS-SmartGuide/src/components/officer/PaymentSubmissionMonitor.tsx
+@@ -891,6 +891,7 @@ export const PaymentSubmissionMonitor: React.FC<PaymentSubmissionMonitorProps> =
+               {outboxFeedback && <p role="status" className="text-xs font-semibold text-blue-800">{outboxFeedback}</p>}
+               <p className="rounded-md border border-amber-200 bg-amber-50 p-2.5 text-[11px] leading-relaxed text-amber-900">
+-                Prototype mode: items are recorded as queued or scheduled only. Email, SMS and OPAS messages are not delivered,
+-                scheduled jobs do not run in the background, and delivery status must not be treated as provider confirmation.
++                Items queued from this screen are recorded only. Automatic reminders for reverted and paid-unsubmitted cases now run
++                in the background (server scheduler, or the n8n reminder engine when connected) and are marked Sent only when Twilio or
++                Resend accepts them. Delivery is confirmed by provider receipts, not by this screen.
+               </p>
+             </div>
+diff --git a/OPAS-SmartGuide/src/server/persistence.ts b/OPAS-SmartGuide/src/server/persistence.ts
+index 2e2a124..414ab8c 100644
+--- a/OPAS-SmartGuide/src/server/persistence.ts
++++ b/OPAS-SmartGuide/src/server/persistence.ts
+@@ -26,5 +26,6 @@ const databasePath = path.resolve(configuredPath);
+ mkdirSync(path.dirname(databasePath), { recursive: true });
+ 
+-const database = new Database(databasePath);
++/** Shared connection (also used by handoverStore.ts). */
++export const database = new Database(databasePath);
+ database.pragma('journal_mode = WAL');
+ database.pragma('foreign_keys = ON');
+@@ -265,5 +266,5 @@ export function saveApplicantMessage(record: ApplicantMessageRecord) {
+       (id, applicant_user_id, application_reference, channel, subject, content, status, created_at, read_at, batch_id, dedupe_key)
+     VALUES (@id, @applicantUserId, @applicationReference, @channel, @subject, @content, @status, @createdAt, @readAt, @batchId, @dedupeKey)
+-  `).run(record);
++  `).run({ ...record, readAt: record.readAt ?? null });
+   return result.changes > 0;
+ }
+diff --git a/Simulated-OPAS/src/App.tsx b/Simulated-OPAS/src/App.tsx
+index dd4f7c1..799dbb1 100644
+--- a/Simulated-OPAS/src/App.tsx
++++ b/Simulated-OPAS/src/App.tsx
+@@ -1,3 +1,4 @@
+-import React from 'react';
++import React, { useEffect, useState } from 'react';
++import { parseDeepLink, rememberDeepLink, recallDeepLink, fieldElementId, type ApplicationDeepLink } from './utils/deepLink';
+ import { PassportProvider, usePassport } from './context/PassportContext';
+ import { Header } from './components/Header';
+@@ -14,9 +15,10 @@ import { Step5ReviewDeclaration } from './components/ApplicationWizard/Step5Revi
+ import { Step6Payment } from './components/ApplicationWizard/Step6Payment';
+ import { Step7Appointment } from './components/ApplicationWizard/Step7Appointment';
+-import { ArrowLeft } from 'lucide-react';
++import { ArrowLeft, Link2, X } from 'lucide-react';
+ 
+ const OPASAppContent: React.FC = () => {
+   const {
+     currentUser,
++    applications,
+     currentApp,
+     setCurrentAppId,
+@@ -29,4 +31,53 @@ const OPASAppContent: React.FC = () => {
+   } = usePassport();
+ 
++  // Reminder deep links: /?application=REF&action=fix&field=photo opens that application at the field to fix.
++  const [pendingLink, setPendingLink] = useState<ApplicationDeepLink | null>(() => {
++    const fromUrl = typeof window !== 'undefined' ? parseDeepLink(window.location.search) : null;
++    if (fromUrl) {
++      rememberDeepLink(fromUrl);
++      window.history.replaceState(null, '', window.location.pathname);
++      return fromUrl;
++    }
++    return recallDeepLink();
++  });
++  const [openedLink, setOpenedLink] = useState<ApplicationDeepLink | null>(null);
++  const [linkError, setLinkError] = useState<string | null>(null);
++  const [targetStep, setTargetStep] = useState<number | null>(null);
++
++  useEffect(() => {
++    if (!currentUser || !pendingLink) return;
++    const match = applications.find(app => app.referenceNumber === pendingLink.applicationReference && app.userId === currentUser.id)
++      || applications.find(app => app.referenceNumber === pendingLink.applicationReference);
++    if (match && match.userId === currentUser.id) {
++      setCurrentAppId(match.id);
++      setTargetStep(pendingLink.step);
++      setOpenedLink(pendingLink);
++      setLinkError(null);
++    } else {
++      setLinkError(match
++        ? `Application ${pendingLink.applicationReference} belongs to a different account. Log out and log in with the account that created it.`
++        : `Application ${pendingLink.applicationReference} was not found in your account. Check that you logged in with the account that created it.`);
++    }
++    setPendingLink(null);
++    rememberDeepLink(null);
++  }, [currentUser, pendingLink, applications, setCurrentAppId]);
++
++  useEffect(() => {
++    if (!currentApp || targetStep === null || currentApp.referenceNumber !== openedLink?.applicationReference) return;
++    updateCurrentApplication({ currentStep: targetStep });
++    setTargetStep(null);
++    const elementId = fieldElementId(openedLink.field);
++    if (elementId) {
++      window.setTimeout(() => {
++        const el = document.getElementById(elementId);
++        if (el) {
++          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
++          el.classList.add('ring-4', 'ring-purple-400');
++          window.setTimeout(() => el.classList.remove('ring-4', 'ring-purple-400'), 6000);
++        }
++      }, 300);
++    }
++  }, [currentApp, targetStep, openedLink, updateCurrentApplication]);
++
+   const handleStartNew = () => {
+     if (!currentUser) {
+@@ -88,4 +139,13 @@ const OPASAppContent: React.FC = () => {
+           /* Gated: Applicant MUST log in or create an account first */
+           <div className="max-w-7xl mx-auto px-4 sm:px-8 py-8">
++            {pendingLink && (
++              <div className="mb-4 p-3 rounded-lg border-2 border-blue-400 bg-blue-50 text-xs text-blue-950 flex items-start gap-2">
++                <Link2 className="w-4 h-4 shrink-0 mt-0.5" />
++                <p>
++                  <strong>Log in to open application {pendingLink.applicationReference}.</strong> After you log in you will go straight to:{' '}
++                  <strong>{pendingLink.label}</strong>.
++                </p>
++              </div>
++            )}
+             {authPageMode === 'LOGIN' ? (
+               <LoginPage onSwitchToRegister={() => setAuthPageMode('REGISTER')} />
+@@ -116,4 +176,20 @@ const OPASAppContent: React.FC = () => {
+             </div>
+ 
++            {openedLink && openedLink.applicationReference === currentApp.referenceNumber && (
++              <div className="no-print px-4 sm:px-8 max-w-6xl mx-auto">
++                <div className="p-3 rounded-lg border-2 border-purple-400 bg-purple-50 text-xs text-purple-950 flex items-start justify-between gap-2">
++                  <div className="flex items-start gap-2">
++                    <Link2 className="w-4 h-4 shrink-0 mt-0.5" />
++                    <p>
++                      {openedLink.action === 'fix'
++                        ? <>You opened this from your reminder. <strong>What to fix: {openedLink.label}.</strong> Then press <strong>RESUBMIT</strong> and wait for the green confirmation.</>
++                        : <>You opened this from your reminder. Your payment is received. <strong>Review and press SUBMIT</strong>. Do not pay again.</>}
++                    </p>
++                  </div>
++                  <button type="button" onClick={() => setOpenedLink(null)} className="text-purple-700 hover:text-purple-950 cursor-pointer" title="Dismiss"><X className="w-4 h-4" /></button>
++                </div>
++              </div>
++            )}
++
+             {/* Multi-Step Indicator */}
+             <div className="no-print">
+@@ -166,4 +242,10 @@ const OPASAppContent: React.FC = () => {
+           /* Logged In: Citizen Dashboard */
+           <div className="max-w-7xl mx-auto px-4 sm:px-8 py-8">
++            {linkError && (
++              <div role="alert" className="mb-4 p-3 rounded-lg border-2 border-amber-400 bg-amber-50 text-xs text-amber-950 flex items-start justify-between gap-2">
++                <p>{linkError}</p>
++                <button type="button" onClick={() => setLinkError(null)} className="cursor-pointer" title="Dismiss"><X className="w-4 h-4" /></button>
++              </div>
++            )}
+             <ApplicantDashboard
+               onStartNew={handleStartNew}
+diff --git a/Simulated-OPAS/src/components/ApplicationWizard/Step4Documents.tsx b/Simulated-OPAS/src/components/ApplicationWizard/Step4Documents.tsx
+index 44159fa..2b9e693 100644
+--- a/Simulated-OPAS/src/components/ApplicationWizard/Step4Documents.tsx
++++ b/Simulated-OPAS/src/components/ApplicationWizard/Step4Documents.tsx
+@@ -2,4 +2,5 @@ import React, { useState, useRef } from 'react';
+ import { SmartValidationFixBanner } from '../SmartValidationPanel'
+ import { usePassport } from '../../context/PassportContext';
++import { ResubmitPanel } from '../ResubmitPanel';
+ import type { UploadedDoc, PhotoComplianceReport } from '../../types/passport';
+ import {
+@@ -220,5 +221,5 @@ export const Step4Documents: React.FC<Step4DocumentsProps> = ({ onNext, onBack }
+       <div className="space-y-6">
+         {/* 1. Green National Registration Card (NRC) */}
+-        <div className="bg-white border border-slate-200 rounded-lg p-5">
++        <div id="doc-section-nrc" className="bg-white border border-slate-200 rounded-lg p-5 scroll-mt-24">
+           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+             <div>
+@@ -310,5 +311,5 @@ export const Step4Documents: React.FC<Step4DocumentsProps> = ({ onNext, onBack }
+ 
+         {/* 2. Certified Zambian Birth Certificate */}
+-        <div className="bg-white border border-slate-200 rounded-lg p-5">
++        <div id="doc-section-birth-certificate" className="bg-white border border-slate-200 rounded-lg p-5 scroll-mt-24">
+           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+             <div>
+@@ -400,5 +401,5 @@ export const Step4Documents: React.FC<Step4DocumentsProps> = ({ onNext, onBack }
+ 
+         {/* 3. Official Biometric Passport Photo */}
+-        <div className="bg-white border border-slate-200 rounded-lg p-5">
++        <div id="doc-section-photo" className="bg-white border border-slate-200 rounded-lg p-5 scroll-mt-24">
+           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+             <div>
+@@ -527,5 +528,5 @@ export const Step4Documents: React.FC<Step4DocumentsProps> = ({ onNext, onBack }
+ 
+         {/* 4. Parents' Green NRC Scan (Optional or for Citizenship Proof) */}
+-        <div className="bg-white border border-slate-200 rounded-lg p-5">
++        <div id="doc-section-supporting" className="bg-white border border-slate-200 rounded-lg p-5 scroll-mt-24">
+           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+             <div>
+@@ -622,4 +623,6 @@ export const Step4Documents: React.FC<Step4DocumentsProps> = ({ onNext, onBack }
+       </div>
+ 
++      <ResubmitPanel />
++
+       {/* Action Footer */}
+       <div className="flex items-center justify-between pt-4 border-t border-slate-200">
+diff --git a/Simulated-OPAS/src/components/ApplicationWizard/Step5ReviewDeclaration.tsx b/Simulated-OPAS/src/components/ApplicationWizard/Step5ReviewDeclaration.tsx
+index 4052067..404bf40 100644
+--- a/Simulated-OPAS/src/components/ApplicationWizard/Step5ReviewDeclaration.tsx
++++ b/Simulated-OPAS/src/components/ApplicationWizard/Step5ReviewDeclaration.tsx
+@@ -1,4 +1,5 @@
+ import React, { useRef, useState } from 'react';
+ import { usePassport } from '../../context/PassportContext';
++import { ResubmitPanel } from '../ResubmitPanel';
+ import type { PassportApplication } from '../../types/passport';
+ import { SmartValidationPanel } from '../SmartValidationPanel';
+@@ -155,4 +156,5 @@ export const Step5ReviewDeclaration: React.FC<Step5ReviewDeclarationProps> = ({
+   return (
+     <div className="max-w-4xl mx-auto space-y-8">
++      <ResubmitPanel />
+       <div>
+         <div className="flex items-center justify-between">
+diff --git a/Simulated-OPAS/src/context/PassportContext.tsx b/Simulated-OPAS/src/context/PassportContext.tsx
+index 2c55b6c..7725ac0 100644
+--- a/Simulated-OPAS/src/context/PassportContext.tsx
++++ b/Simulated-OPAS/src/context/PassportContext.tsx
+@@ -67,7 +67,16 @@ interface PassportContextType {
+   testOpasPaymentApiDirectly: (amount?: number) => Promise<OpasPaymentApiResponse>;
+   confirmAppointment: (officeId: string, date: string, timeSlot: string) => void;
++  resubmitRevertedApplication: () => Promise<ResubmitResult>;
+   resetAllData: () => void;
+ }
+ 
++export interface ResubmitResult {
++  success: boolean;
++  confirmationNumber?: string;
++  resubmittedAt?: string;
++  smartGuideSynced?: boolean;
++  error?: string;
++}
++
+ 
+ const STORAGE_KEY_APPS = 'opas_zambia_applications_v3';
+@@ -502,4 +511,38 @@ export const PassportProvider: React.FC<{ children: React.ReactNode }> = ({ chil
+   };
+ 
++  // Server-confirmed resubmission of a reverted application. Status changes only after the server answers.
++  const resubmitRevertedApplication = async (): Promise<ResubmitResult> => {
++    if (!currentApp) return { success: false, error: 'No application is open.' };
++    if (currentApp.status !== 'REVERTED_ACTION_REQUIRED') return { success: false, error: 'This application is not waiting for corrections.' };
++    const targetId = currentApp.id;
++    try {
++      const response = await fetch('/api/opas/resubmit', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
++        body: JSON.stringify({ applicationReference: currentApp.referenceNumber, userId: currentApp.userId }),
++      });
++      const data = await response.json().catch(() => ({}));
++      if (!response.ok || data.success !== true || !data.confirmationNumber) {
++        return { success: false, error: typeof data.error === 'string' ? data.error : `The OPAS server answered ${response.status}.` };
++      }
++      const resubmittedAt = String(data.resubmittedAt || new Date().toISOString());
++      setApplications(prev => prev.map(app => app.id !== targetId ? app : {
++        ...app,
++        status: 'UNDER_REVIEW',
++        updatedAt: resubmittedAt,
++        resubmission: { confirmationNumber: data.confirmationNumber, resubmittedAt, smartGuideSynced: Boolean(data.smartGuide?.synced) },
++        statusHistory: [...app.statusHistory, {
++          status: 'UNDER_REVIEW',
++          timestamp: resubmittedAt,
++          note: `Applicant resubmitted corrections. Confirmation ${data.confirmationNumber}.`,
++          updatedBy: 'Applicant',
++        }],
++      }));
++      return { success: true, confirmationNumber: data.confirmationNumber, resubmittedAt, smartGuideSynced: Boolean(data.smartGuide?.synced) };
++    } catch (error) {
++      return { success: false, error: error instanceof Error ? `Could not reach the OPAS server (${error.message}).` : 'Could not reach the OPAS server.' };
++    }
++  };
++
+   const resetAllData = () => {
+     localStorage.removeItem(STORAGE_KEY_APPS);
+@@ -540,4 +583,5 @@ export const PassportProvider: React.FC<{ children: React.ReactNode }> = ({ chil
+         testOpasPaymentApiDirectly,
+         confirmAppointment,
++        resubmitRevertedApplication,
+         resetAllData,
+       }}
+diff --git a/Simulated-OPAS/src/types/passport.ts b/Simulated-OPAS/src/types/passport.ts
+index 525ca69..8bf949f 100644
+--- a/Simulated-OPAS/src/types/passport.ts
++++ b/Simulated-OPAS/src/types/passport.ts
+@@ -171,4 +171,9 @@ export interface PassportApplication {
+   appointment?: BiometricAppointment;
+   officerNotes?: string;
++  resubmission?: {
++    confirmationNumber: string;
++    resubmittedAt: string;
++    smartGuideSynced: boolean;
++  };
+   revertDetails?: {
+     revertedAt: string;
+diff --git a/Simulated-OPAS/vite.config.ts b/Simulated-OPAS/vite.config.ts
+index 6fce4f5..b67d875 100644
+--- a/Simulated-OPAS/vite.config.ts
++++ b/Simulated-OPAS/vite.config.ts
+@@ -594,4 +594,36 @@ function opasPaymentApiPlugin(apiKey: string, oidcIssuer: string, oidcAudience:
+         }
+ 
++        // POST /api/opas/resubmit - applicant resubmits a reverted application.
++        // OPAS is the system of record: the resubmission is confirmed here, then SmartGuide is told
++        // (signed SUBMITTED event) so reminders stop and the applicant gets a confirmation message.
++        if (req.method === 'POST' && url === '/api/opas/resubmit') {
++          let body = '';
++          req.on('data', chunk => { body += chunk; });
++          req.on('end', () => {
++            void (async () => {
++              let data: any;
++              try { data = JSON.parse(body || '{}'); } catch { sendJson(res, 400, { success: false, error: 'Invalid request.' }); return; }
++              const applicationReference = String(data?.applicationReference || '').trim();
++              if (!applicationReference) { sendJson(res, 400, { success: false, error: 'applicationReference is required.' }); return; }
++              const resubmittedAt = new Date().toISOString();
++              const confirmationNumber = `OPAS-RESUB-${applicationReference.replace(/[^A-Z0-9]/gi, '').slice(-8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
++              const index = opasApplicationStatuses.findIndex(x => x.applicationReference === applicationReference);
++              if (index >= 0) opasApplicationStatuses[index] = { ...opasApplicationStatuses[index], applicationStatus: 'UNDER_REVIEW', submissionStatus: 'SUBMITTED', updatedAt: resubmittedAt };
++              let smartGuide: { synced: boolean; error?: string; confirmation?: unknown } = { synced: false };
++              try {
++                const result: any = await postToSmartGuide('/api/integration/opas/application-events', {
++                  applicationReference, applicationStatus: 'SUBMITTED', occurredAt: resubmittedAt, opasAcknowledgementReference: confirmationNumber,
++                });
++                smartGuide = result?.skipped ? { synced: false, error: result.reason } : { synced: true, confirmation: result?.confirmation };
++              } catch (error: any) {
++                smartGuide = { synced: false, error: error?.message || 'SmartGuide could not be reached.' };
++                console.error('SmartGuide resubmission event failed:', error);
++              }
++              sendJson(res, 200, { success: true, applicationReference, status: 'UNDER_REVIEW', confirmationNumber, resubmittedAt, smartGuide });
++            })();
++          });
++          return;
++        }
++
+         // POST /api/applications/sync - simulated OPAS publishes latest application status
+         if (req.method === 'POST' && url.startsWith('/api/applications/sync')) {
