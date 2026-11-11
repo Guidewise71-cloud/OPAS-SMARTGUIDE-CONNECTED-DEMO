@@ -107,7 +107,7 @@ export interface NotificationLog {
   dispatchedBy?: {
     userId: string;
     name: string;
-    role: 'citizen' | 'officer' | 'admin' | 'system';
+    role: 'citizen' | 'officer' | 'supervisor' | 'admin' | 'system';
   };
   deliveryUpdatedAt?: string;
   auditTrail?: NotificationAuditEvent[];
@@ -129,7 +129,7 @@ export interface ApplicationLifecycleEvent {
   timestamp: string;
   actorId?: string;
   actorName?: string;
-  actorRole?: 'citizen' | 'officer' | 'admin' | 'system';
+  actorRole?: 'citizen' | 'officer' | 'supervisor' | 'admin' | 'system';
 }
 
 export interface PassportApplication {
