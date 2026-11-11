@@ -1,4 +1,3 @@
-
 import express from 'express';
 import http from 'http';
 import path from 'path';
@@ -7,13 +6,13 @@ import dotenv from 'dotenv';
 
 import { AI_CONSISTENCY_PROMPT, type AiConsistencyChecker } from './src/server/applicationErrorEngine.ts';
 import { createApplicationValidationHandler, latestValidationResults } from './src/server/applicationValidationRoute.ts';
+import { createAssistantAskHandler } from './src/server/assistantRoute.ts';
 
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { INITIAL_APPLICATIONS } from './src/data/mockApplications.ts';
 import { INITIAL_USERS } from './src/data/mockUsers.ts';
-import type { UserAccount } from './src/types/auth.ts';
 import { isRegisteredSimulatedApplicant } from './src/utils/simulatedApplicantAuth.ts';
 import { detectReminderCandidates } from './src/utils/reminderRules.ts';
 import { ApplicationStatus, NotificationLog, PassportApplication } from './src/types/passport.ts';
@@ -309,44 +308,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number = 25000): P
     throw err;
   }
 }
-
-
-sync function fetchSimulatedOpasApi(apiPath: string, init: RequestInit = {}) {
-  // ...existing guards unchanged...
-  const response = await fetch(target, {
-    method: 'GET',
-    headers: { Accept: 'application/json', ...(init.headers as object) },
-    signal: AbortSignal.timeout(5000),
-    ...init,
-  });
-  // ...rest unchanged
-}
-const simulatedCitizens = new Map<string, UserAccount>();
-
-function findActiveUser(id: string, role?: string) {
-  const u = INITIAL_USERS.find((x) => x.id === id && x.status === 'ACTIVE') || simulatedCitizens.get(id);
-  return u && u.status === 'ACTIVE' && (!role || u.role === role) ? u : undefined;
-}
-
-async function authenticateSimulatedApplicant(identifier: string, password: string): Promise<UserAccount | undefined> {
-  if (!identifier || !password) return undefined;
-  try {
-    const payload = await fetchSimulatedOpasApi('/api/identity/authenticate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ identifier, password }),
-    });
-    const a = payload?.applicant || payload?.user; // shape unverified
-    if (!a) return undefined;
-    const user = { id: `sim-${a.id}`, role: 'citizen', status: 'ACTIVE', fullName: a.fullName || a.name, email: a.email, nrcNumber: a.nrcNumber } as UserAccount;
-    simulatedCitizens.set(user.id, user);
-    return user;
-  } catch { return undefined; }
-}
-const simulatedCitizens = new Map<string, UserAccount>();
-const findActiveUser = (id: string, role?: string) =>
-  INITIAL_USERS.find(u => u.id === id && u.status === 'ACTIVE' && (!role || u.role === role))
-  || simulatedCitizens.get(id);
 
 // Official MoHAIS Passport Regulations & Operational System Prompt
 const MOHAIS_SYSTEM_PROMPT = `You are an AI guidance assistant for a Zambia passport-service prototype. You are not an official MoHAIS representative, and this application is not connected to the government OPAS system. Treat any application information in the supplied context as simulated demo data, never as a live government record. Be respectful, clear, and careful about uncertainty. Do not claim that information is official or current unless you can verify it with an available source.
@@ -996,7 +957,6 @@ app.post('/api/assistant/chat', async (req, res) => {
               }
             }
           }
-
           const metadata = {
             reply,
             groundingSources: groundingSources.slice(0, 4),
@@ -1268,8 +1228,6 @@ type SimulatedApplicationStatus = {
   applicationReference: string;
   applicationStatus: string;
   submissionStatus: 'SUBMITTED' | 'NOT_SUBMITTED';
-    INCOMPLETE: 'Incomplete',
-  INVALID_CONTACT_DETAILS: 'Invalid Contact Details',
 };
 
 const APPLICATION_STATUS_FROM_API: Record<string, ApplicationStatus> = {
@@ -1337,7 +1295,11 @@ app.post(['/api/integration/applications', '/api/integration/opas/applications']
     const fullName = String(data.applicantName || 'Simulated OPAS Applicant');
     const nrc = String(data.nrcNumber || '000000/00/0');
     const statusText = String(data.applicationStatus || 'DRAFT').toUpperCase();
- 
+    const mapped = APPLICATION_STATUS_FROM_API[statusText];
+    const protectedStates: ApplicationStatus[] = ['Paid - Unsubmitted', 'Submitted - Under Review', 'Reverted'];
+    const status: ApplicationStatus =
+      existing && protectedStates.includes(existing.status) ? existing.status
+      : mapped ?? existing?.status ?? 'Draft';
     const contact = {
       phone: String(data.phone || ''), phoneCountryCode: '+260', email: String(data.email || ''),
       residentialAddress: '', district: '', province: 'Lusaka', whatsappNumber: '', whatsappOptIn: false, whatsappVerified: false,
@@ -1453,6 +1415,9 @@ app.get('/api/integration/validation-results/:reference', requireStaff('officer'
 app.get('/api/integration/events', requireStaff('officer', 'supervisor', 'admin'), (_req, res) => {
   return res.json({ success: true, events: listIntegrationEvents(200) });
 });
+
+// Staff-only proxy to the external assistant API; the key stays server-side.
+app.post('/api/smartguide/ask', requireStaff('officer', 'supervisor', 'admin'), createAssistantAskHandler());
 
 app.get('/api/payment/transactions', requireStaff('officer', 'admin'), async (_req, res) => {
   if (SIMULATED_OPAS_API_BASE_URL) {
@@ -2256,11 +2221,5 @@ async function startServer() {
     console.log(`MoHAIS OPAS Intelligence Server running on port ${PORT}`);
   });
 }
-
-const mapped = APPLICATION_STATUS_FROM_API[statusText];
-const protectedStates: ApplicationStatus[] = ['Paid - Unsubmitted', 'Submitted - Under Review', 'Reverted'];
-const status: ApplicationStatus =
-  existing && protectedStates.includes(existing.status) ? existing.status
-  : mapped ?? existing?.status ?? 'Draft';
 
 startServer();
