@@ -681,6 +681,13 @@ export const Step6Payment: React.FC<Step6PaymentProps> = ({ onPaymentSuccess, on
                   </p>
                 </div>
 
+                {/* Return-to-OPAS instruction */}
+                <div className="rounded-lg border-2 border-amber-400 bg-amber-50 p-4 text-center space-y-1" role="alert">
+                  <p className="text-sm font-black text-amber-950">YOU HAVE SUCCESSFULLY PAID FOR YOUR PASSPORT SERVICE</p>
+                  <p className="text-sm font-bold text-amber-950">CLOSE THIS WINDOW AND RETURN TO THE PASSPORT APPLICATION TO COMPLETE THE PROCESS.</p>
+                  <p className="text-xs text-amber-900">Your application is NOT submitted yet. Do not pay again.</p>
+                </div>
+
                 {/* Receipt Details Box */}
                 <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-2.5 text-xs">
                   <div className="flex items-center justify-between border-b border-slate-200 pb-2">
@@ -769,7 +776,7 @@ export const Step6Payment: React.FC<Step6PaymentProps> = ({ onPaymentSuccess, on
                     }}
                     className="flex-1 py-2.5 text-xs font-bold text-white bg-emerald-800 hover:bg-emerald-900 rounded-md cursor-pointer shadow-sm flex items-center justify-center gap-1.5"
                   >
-                    <span>Proceed to Appointment (Step 7)</span>
+                    <span>Return to my application</span>
                     <ArrowRight className="w-4 h-4 text-amber-300" />
                   </button>
                 </div>
