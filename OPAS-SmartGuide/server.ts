@@ -2169,6 +2169,8 @@ app.get('/api/responsible-ai/accuracy-tests', async (_req, res) => {
     ];
 
     return res.json({
+      illustrative: true,
+      note: 'Static illustrative values. These benchmarks are not executed and are not measured accuracy.',
       overallAccuracy: 98.6,
       precision: 99.1,
       biasDisparityRatio: 0.992,
