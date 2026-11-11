@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { PAYMENT_RETURN_HEADLINE, PAYMENT_RETURN_INSTRUCTION, PAYMENT_RETURN_WARNING, getPaymentFollowUp } from '../../utils/paymentReturnGuidance';
 import {
   LayoutDashboard,
   Bot,
@@ -1551,6 +1552,16 @@ export const CitizenPortal: React.FC<CitizenPortalProps> = ({
                                 <p className="pt-1 text-xs font-medium text-rose-700">
                                   Action required: {app.reversionReason}
                                 </p>
+                              )}
+                              {app.status === 'Paid - Unsubmitted' && (
+                                <div className="mt-2 rounded-lg border-2 border-amber-400 bg-amber-50 p-3 text-xs text-amber-950" role="alert">
+                                  <p className="font-black">{PAYMENT_RETURN_HEADLINE}</p>
+                                  <p className="mt-1 font-bold">{PAYMENT_RETURN_INSTRUCTION}</p>
+                                  <p className="mt-1">{PAYMENT_RETURN_WARNING}</p>
+                                  {getPaymentFollowUp(app) && (
+                                    <p className="mt-1 font-semibold text-amber-800">{getPaymentFollowUp(app)!.label}</p>
+                                  )}
+                                </div>
                               )}
                             </div>
                           </div>
