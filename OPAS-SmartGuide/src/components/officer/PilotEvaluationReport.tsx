@@ -4,6 +4,10 @@ import { ShieldCheck, TrendingUp } from 'lucide-react';
 export const PilotEvaluationReport: React.FC = () => {
   return (
     <div className="space-y-6 text-slate-200">
+      <div role="note" className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+        Illustrative figures only. The values below are placeholders for demonstration and are not measured pilot results.
+        Replace them with recorded data before reporting.
+      </div>
       {/* Governance & Sponsorship Header with low contrast slate */}
       <div className="bg-[#20293a] border border-[#33425a] rounded-2xl p-6 shadow-sm">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-[#33425a] pb-4">
@@ -21,7 +25,7 @@ export const PilotEvaluationReport: React.FC = () => {
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-xl bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              Pilot Active (Week 4 of 6)
+              Illustrative pilot view
             </span>
           </div>
         </div>
