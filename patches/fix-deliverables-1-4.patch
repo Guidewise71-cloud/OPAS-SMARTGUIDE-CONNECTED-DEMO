@@ -1,0 +1,1190 @@
+--- a/OPAS-SmartGuide/server.ts
++++ b/OPAS-SmartGuide/server.ts
+@@ -15,7 +15,9 @@
+ import { INITIAL_USERS } from './src/data/mockUsers.ts';
+ import type { UserAccount } from './src/types/auth.ts';
+ import { isRegisteredSimulatedApplicant } from './src/utils/simulatedApplicantAuth.ts';
+-import { detectReminderCandidates } from './src/utils/reminderRules.ts';
++import { availableChannels, buildReminderMessage, detectReminderCandidates, effectiveDaysInStatus, lastReminderAt, MIN_REMINDER_INTERVAL_HOURS, type ReminderChannel } from './src/utils/reminderRules.ts';
++import { approvedFaqPromptBlock, formatApprovedFaqReply, matchApprovedFaq } from './src/utils/faqMatcher.ts';
++import { isSmsConfigured, isWhatsAppConfigured, sendSmsViaTwilio, sendWhatsAppMessage } from './src/server/messagingProviders.ts';
+ import { ApplicationStatus, NotificationLog, PassportApplication } from './src/types/passport.ts';
+ import type {
+   DocumentIssueCaseStage,
+@@ -63,7 +65,7 @@
+ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
+ const SIMULATED_OPAS_API_BASE_URL = (process.env.SIMULATED_OPAS_API_BASE_URL || '').trim().replace(/\/+$/, '');
+ 
+-async function fetchSimulatedOpasApi(apiPath: string) {
++async function fetchSimulatedOpasApi(apiPath: string, init: RequestInit = {}) {
+   if (!SIMULATED_OPAS_API_BASE_URL) return null;
+   if (process.env.NODE_ENV === 'production') {
+     throw new Error('The local simulated OPAS connector is disabled in production.');
+@@ -79,8 +81,9 @@
+   const target = new URL(apiPath, `${base.origin}/`);
+   const response = await fetch(target, {
+     method: 'GET',
+-    headers: { Accept: 'application/json' },
+     signal: AbortSignal.timeout(5000),
++    ...init,
++    headers: { Accept: 'application/json', ...((init.headers as Record<string, string>) || {}) },
+   });
+   const payload = await response.json().catch(() => null);
+   if (!response.ok) {
+@@ -311,16 +314,6 @@
+ }
+ 
+ 
+-sync function fetchSimulatedOpasApi(apiPath: string, init: RequestInit = {}) {
+-  // ...existing guards unchanged...
+-  const response = await fetch(target, {
+-    method: 'GET',
+-    headers: { Accept: 'application/json', ...(init.headers as object) },
+-    signal: AbortSignal.timeout(5000),
+-    ...init,
+-  });
+-  // ...rest unchanged
+-}
+ const simulatedCitizens = new Map<string, UserAccount>();
+ 
+ function findActiveUser(id: string, role?: string) {
+@@ -343,10 +336,6 @@
+     return user;
+   } catch { return undefined; }
+ }
+-const simulatedCitizens = new Map<string, UserAccount>();
+-const findActiveUser = (id: string, role?: string) =>
+-  INITIAL_USERS.find(u => u.id === id && u.status === 'ACTIVE' && (!role || u.role === role))
+-  || simulatedCitizens.get(id);
+ 
+ // Official MoHAIS Passport Regulations & Operational System Prompt
+ const MOHAIS_SYSTEM_PROMPT = `You are an AI guidance assistant for a Zambia passport-service prototype. You are not an official MoHAIS representative, and this application is not connected to the government OPAS system. Treat any application information in the supplied context as simulated demo data, never as a live government record. Be respectful, clear, and careful about uncertainty. Do not claim that information is official or current unless you can verify it with an available source.
+@@ -477,6 +466,12 @@
+     return `I can explain the form checker’s current findings. It uses deterministic format and completeness rules; it does not verify identity against official records.\n\n${blocking.length} item(s) need correction before submission and ${warnings.length} suggestion(s) need review:\n${list}\n\nSelect the relevant step in the form to update the information. Warnings are suggestions and may not block submission.`;
+   }
+ 
++  // 0. Approved FAQs take priority over generic keyword topics (case-specific status is handled next).
++  const approvedFaq = matchApprovedFaq(message);
++  if (approvedFaq && !(contextData.trackingNumber && /\b(status|my application|my case|track)/.test(lower))) {
++    return formatApprovedFaqReply(approvedFaq);
++  }
++
+   // 1. Direct active case inquiries
+   if (
+     contextData.trackingNumber &&
+@@ -819,10 +814,24 @@
+       return sendFallback(getMoHAISGroundingReply(message, contextData));
+     }
+ 
++    // Approved FAQs are answered verbatim, so the assistant never paraphrases an approved answer.
++    const approvedFaq = matchApprovedFaq(message);
++    if (approvedFaq) {
++      const reply = formatApprovedFaqReply(approvedFaq);
++      if (streaming) {
++        sendDelta(reply);
++        sendResult({ isLiveGrounded: false, model: 'approved-faq', provider: 'local', faqId: approvedFaq.id });
++      } else {
++        res.json({ reply, isLiveGrounded: false, model: 'approved-faq', provider: 'local', faqId: approvedFaq.id });
++      }
++      return;
++    }
++
+     const aiProviders = getAiProviders();
+ 
+     if (aiProviders.length) {
+       let promptContext = MOHAIS_SYSTEM_PROMPT;
++      promptContext += `\n\n${approvedFaqPromptBlock()}`;
+       promptContext += `\n\nCurrent server timestamp: ${new Date().toISOString()}`;
+ 
+       if (contextData?.applicantName || contextData?.applicationStatus || contextData?.currentSection) {
+@@ -1268,8 +1277,6 @@
+   applicationReference: string;
+   applicationStatus: string;
+   submissionStatus: 'SUBMITTED' | 'NOT_SUBMITTED';
+-    INCOMPLETE: 'Incomplete',
+-  INVALID_CONTACT_DETAILS: 'Invalid Contact Details',
+ };
+ 
+ const APPLICATION_STATUS_FROM_API: Record<string, ApplicationStatus> = {
+@@ -1337,16 +1344,23 @@
+     const fullName = String(data.applicantName || 'Simulated OPAS Applicant');
+     const nrc = String(data.nrcNumber || '000000/00/0');
+     const statusText = String(data.applicationStatus || 'DRAFT').toUpperCase();
+- 
++    // Never let a bulk sync downgrade a case that payment/submission events already advanced.
++    const mapped = APPLICATION_STATUS_FROM_API[statusText];
++    const protectedStates: ApplicationStatus[] = ['Paid - Unsubmitted', 'Submitted - Under Review', 'Reverted'];
++    const status: ApplicationStatus =
++      existing && protectedStates.includes(existing.status) ? existing.status
++      : mapped ?? existing?.status ?? 'Draft';
++
+     const contact = {
+       phone: String(data.phone || ''), phoneCountryCode: '+260', email: String(data.email || ''),
+       residentialAddress: '', district: '', province: 'Lusaka', whatsappNumber: '', whatsappOptIn: false, whatsappVerified: false,
+     };
+-    const application: PassportApplication = existing ? { ...existing, fullName, nrcNumber: nrc, contact, status, lastUpdated: now } : {
++    const statusChangedAt = existing && existing.status === status ? (existing.statusChangedAt || now) : now;
++    const application: PassportApplication = existing ? { ...existing, fullName, nrcNumber: nrc, contact, status, statusChangedAt, daysInStatus: existing.status === status ? existing.daysInStatus : 0, lastUpdated: now } : {
+       id: `sim-opas-${ref}`, trackingNumber: ref, nrcNumber: nrc, fullName, dateOfBirth: String(data.dateOfBirth || ''),
+       gender: 'Male', placeOfBirth: '', passportType: '32-Page Ordinary', serviceSpeed: 'Standard (14-21 days)',
+       feeAmount: Number(data.amount || 500), feePaid: false,
+-      paymentReference: undefined, paidAt: undefined, status, submissionStatus: 'NOT_SUBMITTED', daysInStatus: 0,
++      paymentReference: undefined, paidAt: undefined, status, submissionStatus: 'NOT_SUBMITTED', daysInStatus: 0, statusChangedAt,
+       contact, guarantor: { fullName: '', nrcNumber: '', profession: '', phoneNumber: '', organization: '', verified: false },
+       documents: [], notifications: [], lastUpdated: now, collectionOffice: 'Lusaka Passport Office',
+     };
+@@ -1606,6 +1620,8 @@
+       fullName: typeof data.applicantName === 'string' ? data.applicantName : application.fullName,
+       contact,
+       status: effectiveStatus,
++      daysInStatus: effectiveStatus === application.status ? application.daysInStatus : 0,
++      statusChangedAt: effectiveStatus === application.status ? application.statusChangedAt : syncedAt,
+       lastUpdated: syncedAt,
+     };
+     return updatedApplication;
+@@ -1782,34 +1798,84 @@
+   reason: string;
+ }> = [];
+ 
++type DispatchOutcome = { channel: ReminderChannel; status: NotificationLog['deliveryStatus']; detail: string; failureReason?: string };
++
++/** Tries each usable channel in rule priority order and stops at the first one a provider accepts. */
++async function dispatchReminder(application: PassportApplication, channels: ReminderChannel[], subject: string, content: string, dedupeKey: string): Promise<DispatchOutcome> {
++  const failures: string[] = [];
++  for (const channel of channels) {
++    if (channel === 'WhatsApp') {
++      if (!isWhatsAppConfigured()) { failures.push('WhatsApp: not configured'); continue; }
++      const result = await sendWhatsAppMessage({ to: application.contact.whatsappNumber || application.contact.phone, body: content });
++      if (result.ok) return { channel, status: 'Sent', detail: `WhatsApp accepted (${result.providerMessageId}).` };
++      failures.push(`WhatsApp: ${(result as { reason: string }).reason}`);
++    } else if (channel === 'SMS') {
++      if (!isSmsConfigured()) { failures.push('SMS: not configured'); continue; }
++      const result = await sendSmsViaTwilio({ to: application.contact.phone, body: content });
++      if (result.ok) return { channel, status: 'Sent', detail: `Twilio accepted (${result.providerMessageId}).` };
++      failures.push(`SMS: ${(result as { reason: string }).reason}`);
++    } else if (channel === 'Email') {
++      if (!isResendConfigured()) { failures.push('Email: not configured'); continue; }
++      const result = await sendEmailViaResend({ to: application.contact.email, subject, text: content });
++      if (result.ok) return { channel, status: 'Sent', detail: `Resend accepted (${result.providerMessageId}).` };
++      failures.push(`Email: ${(result as { reason: string }).reason}`);
++    } else {
++      const applicant = findApplicantAccount(application);
++      if (!applicant) { failures.push('OPAS Message Board: no linked applicant account'); continue; }
++      saveApplicantMessage({
++        id: `msg-${dedupeKey}`, applicantUserId: applicant.id, applicationReference: application.trackingNumber,
++        channel: 'OPAS_MESSAGE_BOARD', subject, content, status: 'AVAILABLE', createdAt: new Date().toISOString(),
++        batchId: 'AUTOMATED_REMINDER', dedupeKey,
++      });
++      return { channel, status: 'Delivered', detail: 'Posted to the applicant OPAS Message Board.' };
++    }
++  }
++  return { channel: channels[0] || 'OPAS Message Board', status: 'Failed', detail: 'No channel accepted the reminder.', failureReason: failures.join('; ') };
++}
++
+ async function runAutomatedReminderCycle(source: 'STARTUP' | 'SCHEDULED_24H' | 'MANUAL') {
+   const now = new Date();
++
++  // Age every case from its status-change time so OPAS-synced cases become eligible.
++  for (const application of reminderApplications) {
++    if (!application.statusChangedAt) {
++      application.statusChangedAt = new Date(now.getTime() - (application.daysInStatus || 0) * 86_400_000).toISOString();
++    }
++    application.daysInStatus = effectiveDaysInStatus(application, now);
++  }
++
+   const candidates = detectReminderCandidates(reminderApplications, reminderRules, now);
++  let sent = 0;
++  let failed = 0;
+ 
+   for (const candidate of candidates) {
+-    const { application, channel, reason } = candidate;
++    const { application, rule, channel, reason } = candidate;
++    const { subject, content } = buildReminderMessage(application);
++    const channels = availableChannels(application, rule.channelPriority);
++    const ordered = [channel, ...channels.filter((c) => c !== channel)];
++    const dedupeKey = `reminder:${rule.id}:${application.trackingNumber}:${now.getTime()}`;
++    const outcome = await dispatchReminder(application, ordered, subject, content, dedupeKey);
++    if (outcome.status === 'Failed') failed++; else sent++;
++
+     const notification: NotificationLog = {
+       id: `scheduled-${now.getTime()}-${application.id}`,
+       timestamp: now.toISOString(),
+-      channel,
+-      subject: 'MoHAIS OPAS Reminder: Action Required',
+-      content:
+-        application.status === 'Reverted'
+-          ? `MoHAIS OPAS: Dear ${application.fullName}, your application #${application.trackingNumber} requires correction. Please log in to OPAS within 24 hours to take action.`
+-          : application.status === 'Paid - Unsubmitted'
+-          ? `MoHAIS OPAS: Dear ${application.fullName}, payment has been received for #${application.trackingNumber}. Please complete your application submission within 24 hours.`
+-          : `MoHAIS OPAS: Dear ${application.fullName}, your passport application #${application.trackingNumber} is incomplete. Please log in to OPAS within 24 hours to continue.`,
+-      deliveryStatus: 'Sent',
++      channel: outcome.channel,
++      subject,
++      content,
++      deliveryStatus: outcome.status,
++      ...(outcome.failureReason ? { failureReason: outcome.failureReason } : {}),
++      ruleId: rule.id,
+       auditId: `AUD-SCHEDULED-${now.getTime()}-${application.id}`,
+       trigger: 'AUTOMATED_WORKFLOW',
+-      dispatchedBy: { userId: 'opas-reminder-scheduler', name: 'OPAS 24-Hour Reminder Scheduler', role: 'system' },
++      dispatchedBy: { userId: 'opas-reminder-scheduler', name: 'OPAS Reminder Scheduler', role: 'system' },
+       deliveryUpdatedAt: now.toISOString(),
+       auditTrail: [{
+         id: `evt-scheduled-${now.getTime()}-${application.id}`,
+         timestamp: now.toISOString(),
+-        event: 'DISPATCHED',
+-        actor: 'OPAS 24-Hour Reminder Scheduler',
+-        details: `${source} cycle queued ${channel} reminder. ${reason}`,
++        event: outcome.status === 'Failed' ? 'FAILED' : 'DISPATCHED',
++        actor: 'OPAS Reminder Scheduler',
++        details: `${source} cycle: ${outcome.detail} ${reason}${outcome.failureReason ? ` (${outcome.failureReason})` : ''}`,
+       }],
+     };
+ 
+@@ -1822,13 +1888,13 @@
+       source,
+       applicationId: application.id,
+       trackingNumber: application.trackingNumber,
+-      channel,
+-      outcome: 'QUEUED',
+-      reason,
++      channel: outcome.channel,
++      outcome: outcome.status === 'Failed' ? 'SKIPPED' : 'QUEUED',
++      reason: outcome.failureReason ? `${reason} ${outcome.failureReason}` : reason,
+     });
+   }
+ 
+-  const summary = { ranAt: now.toISOString(), source, eligible: candidates.length, queued: candidates.length };
++  const summary = { ranAt: now.toISOString(), source, eligible: candidates.length, queued: sent, failed };
+   await saveReminderRun(summary);
+   return summary;
+ }
+@@ -1893,7 +1959,7 @@
+     })) });
+ });
+ 
+-app.post('/api/notifications/bulk/run', requireStaff('admin'), async (req, res) => {
++app.post('/api/notifications/bulk/run', requireStaff('admin'), async (req: AuthenticatedRequest, res) => {
+   if (req.body?.confirm !== true) return res.status(400).json({ error: 'Explicit confirmation is required before creating bulk notifications.' });
+   const eligible = getBulkEligibleRecords();
+   const requestedBatchSize = Number(req.body?.batchSize || 500);
+@@ -1903,6 +1969,7 @@
+   let inAppCreated = 0;
+   let boardCreated = 0;
+   let duplicatesSkipped = 0;
++  let antiSpamSkipped = 0;
+   let emailSent = 0;
+   let emailFailed = 0;
+   let emailSkipped = 0;
+@@ -1911,8 +1978,15 @@
+   for (let offset = 0; offset < eligible.length; offset += batchSize) {
+     const chunk = eligible.slice(offset, offset + batchSize);
+     for (const { application, applicantUserId, payment } of chunk) {
++      // Anti-spam (EOI 3.4): skip anyone who received any reminder in the last 72 hours.
++      const last = lastReminderAt(application);
++      if (last && Date.now() - last.getTime() < MIN_REMINDER_INTERVAL_HOURS * 3_600_000) {
++        antiSpamSkipped++;
++        processed++;
++        continue;
++      }
+       const subject = 'Payment received – complete your passport application';
+-      const content = `Dear ${application.fullName}, SmartGuide has matched your successful payment (${payment.transactionReference}) to passport application ${application.trackingNumber}. The application is still awaiting submission. Please sign in to the existing OPAS, review your details and complete the final submission. If you have already submitted, allow OPAS to update your status before taking further action. This is an automated reminder; it is not an approval or rejection decision.`;
++      const content = `Dear ${application.fullName}, SmartGuide has matched your successful payment (${payment.transactionReference}) to passport application ${application.trackingNumber}. The application is still awaiting submission. Please sign in to the existing OPAS, review your details and complete the final submission. If you have already submitted, allow OPAS to update your status before taking further action. You do not need to pay again. This is an automated reminder; it is not an approval or rejection decision.`;
+       const dedupeBase = `${application.trackingNumber}:${payment.transactionReference}:PAID_NOT_SUBMITTED`;
+       const common = { applicantUserId, applicationReference: application.trackingNumber, subject, content,
+         status: 'AVAILABLE' as const, createdAt, batchId };
+@@ -1920,6 +1994,17 @@
+       const board = saveApplicantMessage({ ...common, id: `${batchId}-${processed}-BOARD`, channel: 'OPAS_MESSAGE_BOARD', dedupeKey: `${dedupeBase}:OPAS_BOARD` });
+       if (inApp) inAppCreated++; else duplicatesSkipped++;
+       if (board) boardCreated++; else duplicatesSkipped++;
++      if (inApp || board) {
++        // Record on the case so the scheduler's 72-hour window also sees bulk reminders.
++        application.notifications.unshift({
++          id: `${batchId}-${processed}-LOG`, timestamp: createdAt, channel: 'OPAS Message Board', subject, content,
++          deliveryStatus: 'Delivered', trigger: 'BULK_REMINDER', auditId: `AUD-${batchId}-${processed}`,
++          dispatchedBy: { userId: req.auth?.userId || 'admin', name: req.auth?.fullName || 'Administrator', role: 'admin' },
++          deliveryUpdatedAt: createdAt,
++        });
++        application.lastUpdated = createdAt;
++        await saveApplication(application);
++      }
+ 
+       // Email is sent only after the in-app/board notification was newly created.
+       // A unique outbox key prevents duplicate provider sends on later bulk runs.
+@@ -1954,7 +2039,7 @@
+   }
+   const batch = { id: batchId, createdAt, trigger: 'ADMIN_BULK_PAID_NOT_SUBMITTED', eligible: eligible.length,
+     processed, inAppCreated, boardCreated, emailSent, emailFailed, emailSkipped, emailTestMode: isEmailTestMode(),
+-    duplicatesSkipped, batchSize, status: 'CREATED_IN_DEMO_INBOXES_AND_EMAIL_OUTBOX' };
++    duplicatesSkipped, antiSpamSkipped, batchSize, status: 'CREATED_IN_DEMO_INBOXES_AND_EMAIL_OUTBOX' };
+   saveNotificationBatch(batch);
+   return res.json({ success: true, batch });
+ });
+@@ -2013,8 +2098,9 @@
+ // relevant credentials are present in the environment.
+ app.get('/api/notifications/providers/status', requireStaff('admin'), (_req, res) => {
+   res.json({
+-    whatsapp: Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID),
+-    sms: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER),
++    whatsapp: isWhatsAppConfigured(),
++    whatsappTemplateConfigured: Boolean(process.env.WHATSAPP_TEMPLATE_NAME?.trim()),
++    sms: isSmsConfigured(),
+     email: isResendConfigured(),
+     emailTestMode: isEmailTestMode(),
+     emailTestRecipientConfigured: Boolean(process.env.NOTIFICATION_TEST_RECIPIENT?.trim()),
+@@ -2257,10 +2343,4 @@
+   });
+ }
+ 
+-const mapped = APPLICATION_STATUS_FROM_API[statusText];
+-const protectedStates: ApplicationStatus[] = ['Paid - Unsubmitted', 'Submitted - Under Review', 'Reverted'];
+-const status: ApplicationStatus =
+-  existing && protectedStates.includes(existing.status) ? existing.status
+-  : mapped ?? existing?.status ?? 'Draft';
+-
+ startServer();
+--- a/OPAS-SmartGuide/src/App.tsx
++++ b/OPAS-SmartGuide/src/App.tsx
+@@ -198,6 +198,13 @@
+     );
+   };
+ 
++  const handleUpdateContact = (id: string, contact: Partial<PassportApplication['contact']>) => {
++    const updatedAt = new Date().toISOString();
++    setApplications((prev) => prev.map((app) => app.id === id
++      ? { ...app, contact: { ...app.contact, ...contact }, lastUpdated: updatedAt }
++      : app));
++  };
++
+   const handleAddNotification = (id: string, notif: NotificationLog) => {
+     if (!hasPermission(currentUser, 'notification:dispatch')) {
+       console.warn('OPAS access denied: this account cannot dispatch applicant notifications.');
+@@ -472,6 +479,7 @@
+             applications={applications}
+             onUpdateStatus={handleUpdateStatus}
+             onAddNotification={handleAddNotification}
++            onUpdateContact={handleUpdateContact}
+             onUpdateNotificationDelivery={handleUpdateNotificationDelivery}
+             onSelectApplication={(app) => {
+               // Officer stays strictly on officer dashboard
+--- a/OPAS-SmartGuide/src/components/citizen/CitizenPortal.tsx
++++ b/OPAS-SmartGuide/src/components/citizen/CitizenPortal.tsx
+@@ -97,6 +97,7 @@
+   initialTab,
+ }) => {
+   const [activeNavTab, setActiveNavTab] = useState<NavTab>('dashboard');
++  const { sendMessage: askAssistant } = useChat();
+   const [issuesTimeFilter, setIssuesTimeFilter] = useState<'30' | '7' | '90' | '365'>('30');
+   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+   const [isAssistantDockMinimized, setIsAssistantDockMinimized] = useState(false);
+@@ -1447,6 +1448,33 @@
+                     if (tab === 'messages') setActiveNavTab('notifications');
+                   }}
+                 />
++                <div id="approved-faqs" className="rounded-xl border border-slate-200 bg-white p-4">
++                  <h3 className="text-sm font-bold text-slate-900">Approved FAQs</h3>
++                  <p className="mt-0.5 text-xs text-slate-600">
++                    Answers approved for this service. The assistant gives these exact answers when your question matches.
++                  </p>
++                  <div className="mt-3 divide-y divide-slate-100">
++                    {APPROVED_FAQS.map((faq) => (
++                      <details key={faq.id} className="group py-2">
++                        <summary className="flex cursor-pointer list-none items-start justify-between gap-3 text-sm font-semibold text-slate-800">
++                          <span>
++                            <span className="mr-2 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-blue-700">{faq.category}</span>
++                            {faq.question}
++                          </span>
++                          <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
++                        </summary>
++                        <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-slate-700">{faq.answer}</p>
++                        <button
++                          type="button"
++                          onClick={() => void askAssistant(faq.question)}
++                          className="mt-2 text-xs font-semibold text-blue-700 hover:underline cursor-pointer"
++                        >
++                          Ask the assistant about this
++                        </button>
++                      </details>
++                    ))}
++                  </div>
++                </div>
+               </section>
+             )}
+ 
+--- a/OPAS-SmartGuide/src/components/common/PillarsModule.tsx
++++ b/OPAS-SmartGuide/src/components/common/PillarsModule.tsx
+@@ -19,7 +19,7 @@
+   Search,
+ } from 'lucide-react';
+ import { PassportApplication, NotificationLog } from '../../types/passport';
+-import { validatePhoneNumber, validateEmail, validateNRC } from '../../utils/validation';
++import { validatePhoneNumber, validateEmail, validateNRC, suggestEmailCorrection } from '../../utils/validation';
+ 
+ interface PillarsModuleProps {
+   applications: PassportApplication[];
+@@ -27,6 +27,8 @@
+   onSelectApplication: (app: PassportApplication) => void;
+   onAddNotification: (id: string, notif: NotificationLog) => void;
+   onUpdateStatus: (id: string, newStatus: PassportApplication['status'], notes?: string) => void;
++  /** Saves corrected contact details. Without it, auto-fix only previews the correction. */
++  onUpdateContact?: (id: string, contact: Partial<PassportApplication['contact']>) => void;
+   isOfficerRole?: boolean;
+ }
+ 
+@@ -36,6 +38,7 @@
+   onSelectApplication,
+   onAddNotification,
+   onUpdateStatus,
++  onUpdateContact,
+   isOfficerRole = false,
+ }) => {
+   const [activePillar, setActivePillar] = useState<'contact' | 'completion' | 'reverted' | 'guidance'>(
+@@ -64,13 +67,17 @@
+   const revertedCases = applications.filter((app) => app.status === 'Reverted');
+ 
+   const handleAutoFixContact = (app: PassportApplication) => {
+-    const fixedPhone = validatePhoneNumber(app.contact.phone, app.contact.phoneCountryCode).formatted;
+-    const fixedEmail = app.contact.email.replace('@gamil.com', '@gmail.com').replace('@yaho.com', '@yahoo.com');
+-
+-    app.contact.phone = fixedPhone;
+-    app.contact.email = fixedEmail;
+-
+-    setAutoFixedMessage(`Auto-normalized contact records for ${app.fullName}: ${fixedPhone} · ${fixedEmail}`);
++    const phoneCheck = validatePhoneNumber(app.contact.phone, app.contact.phoneCountryCode);
++    const fixedPhone = phoneCheck.isValid && phoneCheck.formatted ? phoneCheck.formatted : app.contact.phone;
++    const fixedEmail = suggestEmailCorrection(app.contact.email) || app.contact.email;
++
++    // Update through the app state (no in-place mutation) so the change re-renders and persists.
++    if (onUpdateContact) {
++      onUpdateContact(app.id, { phone: fixedPhone, email: fixedEmail });
++      setAutoFixedMessage(`Auto-normalized contact records for ${app.fullName}: ${fixedPhone} · ${fixedEmail}`);
++    } else {
++      setAutoFixedMessage(`Suggested correction for ${app.fullName}: ${fixedPhone} · ${fixedEmail} (not saved)`);
++    }
+     setTimeout(() => setAutoFixedMessage(null), 4000);
+   };
+ 
+--- a/OPAS-SmartGuide/src/components/officer/OfficerDashboard.tsx
++++ b/OPAS-SmartGuide/src/components/officer/OfficerDashboard.tsx
+@@ -79,6 +79,7 @@
+   applications: PassportApplication[];
+   onUpdateStatus: (id: string, newStatus: PassportApplication['status'], notes?: string) => void;
+   onAddNotification: (id: string, notif: NotificationLog) => void;
++  onUpdateContact?: (id: string, contact: Partial<PassportApplication['contact']>) => void;
+   onUpdateNotificationDelivery: (
+     applicationId: string,
+     notificationId: string,
+@@ -154,6 +155,7 @@
+   applications,
+   onUpdateStatus,
+   onAddNotification,
++  onUpdateContact,
+   onUpdateNotificationDelivery,
+   onSelectApplication,
+   onOpenAssistant,
+@@ -1551,6 +1553,7 @@
+                 onSelectApplication={onSelectApplication}
+                 onAddNotification={onAddNotification}
+                 onUpdateStatus={onUpdateStatus}
++                onUpdateContact={onUpdateContact}
+                 isOfficerRole={true}
+               />
+             </div>
+@@ -1615,6 +1618,7 @@
+               onSelectApplication={onSelectApplication}
+               onAddNotification={onAddNotification}
+               onUpdateStatus={onUpdateStatus}
++              onUpdateContact={onUpdateContact}
+               isOfficerRole={true}
+             />
+           </div>
+--- a/OPAS-SmartGuide/src/data/faqs.ts
++++ b/OPAS-SmartGuide/src/data/faqs.ts
+@@ -11,8 +11,8 @@
+     id: 'faq-1',
+     category: 'Requirements',
+     question: 'What documents are required for a first-time adult passport applicant?',
+-    answer: 'First-time adult applicants (age 16 and above) must provide:\n1. Original Green National Registration Card (NRC) and a certified photocopy.\n2. Certified copy of your official Birth Certificate from the Registrar General.\n3. Prescribed Guarantor Section signed and stamped by an authorized professional (e.g., Magistrate, Lawyer, Minister of Religion, Senior Civil Servant).\n4. Two (2) recent compliant passport photographs (45mm x 35mm).\n5. Proof of payment receipt from the Government Payment Gateway or authorized bank.',
+-    tags: ['first-time', 'adult', 'documents', 'nrc', 'birth certificate'],
++    answer: 'First-time adult applicants (age 16 and above) must provide:\n1. Original Green National Registration Card (NRC) and a certified photocopy.\n2. Certified copy of your official Birth Certificate from the Registrar General.\n3. Form \'A\' Section 7 endorsed and stamped by an authorized Recommender (Minister of Religion, Medical or Legal Practitioner, Established Senior Civil Servant, or Senior Bank Official) who has known you personally for at least 2 years. Relatives cannot be recommenders. The recommender must also certify the back of one photo as a true likeness.\n4. Two (2) recent compliant passport photographs (45mm x 35mm).\n5. Proof of payment receipt from the Government Payment Gateway or authorized bank.',
++    tags: ['first-time', 'adult', 'documents', 'nrc', 'birth certificate', 'recommender', 'guarantor'],
+   },
+   {
+     id: 'faq-2',
+@@ -32,8 +32,8 @@
+     id: 'faq-4',
+     category: 'Reverted Cases',
+     question: 'Why was my application reverted and do I have to pay the fee again?',
+-    answer: 'NO, you NEVER need to pay the application fee again for a reverted case!\nAn application is reverted when an inspecting officer flags a fixable discrepancy (such as an unclear photo, missing guarantor stamp, or name mismatch between NRC and birth certificate).\n\nTo resolve it: log into your OPAS account, review the officer\'s specific guidance note on your Message Board, and upload the corrected item. Your application will immediately resume in the processing queue without losing your priority!',
+-    tags: ['revert', 'reverted', 'fees', 'correction', 'photo', 'guarantor'],
++    answer: 'NO, you NEVER need to pay the application fee again for a reverted case!\nAn application is reverted when an inspecting officer flags a fixable discrepancy (such as an unclear photo, missing recommender stamp, or name mismatch between NRC and birth certificate).\n\nTo resolve it: log into your OPAS account, review the officer\'s specific guidance note on your Message Board, and upload the corrected item. Your application will immediately resume in the processing queue without losing your priority!',
++    tags: ['revert', 'reverted', 'pay again', 'correction', 'recommender'],
+   },
+   {
+     id: 'faq-5',
+--- a/OPAS-SmartGuide/src/server/messagingProviders.test.ts
++++ b/OPAS-SmartGuide/src/server/messagingProviders.test.ts
+@@ -0,0 +1,54 @@
++import { describe, expect, it, vi } from 'vitest';
++import { isSmsConfigured, isWhatsAppConfigured, sendSmsViaTwilio, sendWhatsAppMessage } from './messagingProviders.ts';
++
++const twilioEnv = { TWILIO_ACCOUNT_SID: 'AC123', TWILIO_AUTH_TOKEN: 'secret', TWILIO_FROM_NUMBER: '+15550001111' };
++const waEnv = { WHATSAPP_ACCESS_TOKEN: 'token', WHATSAPP_PHONE_NUMBER_ID: '999' };
++
++describe('SMS and WhatsApp providers', () => {
++  it('reports configuration from env keys', () => {
++    expect(isSmsConfigured({})).toBe(false);
++    expect(isSmsConfigured(twilioEnv)).toBe(true);
++    expect(isWhatsAppConfigured(waEnv)).toBe(true);
++  });
++
++  it('does not call the provider when not configured', async () => {
++    const fetchMock = vi.fn();
++    const result = await sendSmsViaTwilio({ to: '+260971234567', body: 'hi' }, {}, fetchMock as unknown as typeof fetch);
++    expect(result.ok).toBe(false);
++    expect(fetchMock).not.toHaveBeenCalled();
++  });
++
++  it('sends SMS through Twilio and returns the message SID', async () => {
++    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ sid: 'SM1' }), { status: 201 }));
++    const result = await sendSmsViaTwilio({ to: '+260971234567', body: 'Reminder' }, twilioEnv, fetchMock as unknown as typeof fetch);
++    expect(result).toEqual({ ok: true, providerMessageId: 'SM1' });
++    const [url, init] = fetchMock.mock.calls[0];
++    expect(String(url)).toContain('/Accounts/AC123/Messages.json');
++    const form = new URLSearchParams(String(init.body));
++    expect(form.get('To')).toBe('+260971234567');
++    expect(form.get('Body')).toBe('Reminder');
++  });
++
++  it('redirects to the test phone when NOTIFICATION_TEST_PHONE is set', async () => {
++    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ sid: 'SM2' }), { status: 201 }));
++    await sendSmsViaTwilio({ to: '+260971234567', body: 'Reminder' }, { ...twilioEnv, NOTIFICATION_TEST_PHONE: '+260960000000' }, fetchMock as unknown as typeof fetch);
++    const form = new URLSearchParams(String(fetchMock.mock.calls[0][1].body));
++    expect(form.get('To')).toBe('+260960000000');
++    expect(form.get('Body')).toContain('[TEST for +260971234567]');
++  });
++
++  it('sends WhatsApp text and template messages', async () => {
++    const ok = () => new Response(JSON.stringify({ messages: [{ id: 'wamid.1' }] }), { status: 200 });
++    const fetchMock = vi.fn().mockImplementation(async () => ok());
++    expect(await sendWhatsAppMessage({ to: '+260971234567', body: 'Hi' }, waEnv, fetchMock as unknown as typeof fetch))
++      .toEqual({ ok: true, providerMessageId: 'wamid.1' });
++    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({ type: 'text', to: '260971234567' });
++    await sendWhatsAppMessage({ to: '+260971234567', body: 'Hi' }, { ...waEnv, WHATSAPP_TEMPLATE_NAME: 'opas_reminder' }, fetchMock as unknown as typeof fetch);
++    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toMatchObject({ type: 'template', template: { name: 'opas_reminder' } });
++  });
++
++  it('surfaces provider errors', async () => {
++    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: 'Invalid To' }), { status: 400 }));
++    expect(await sendSmsViaTwilio({ to: 'x', body: 'y' }, twilioEnv, fetchMock as unknown as typeof fetch)).toEqual({ ok: false, reason: 'Invalid To' });
++  });
++});
+--- a/OPAS-SmartGuide/src/server/messagingProviders.ts
++++ b/OPAS-SmartGuide/src/server/messagingProviders.ts
+@@ -0,0 +1,98 @@
++// SMS (Twilio) and WhatsApp (Meta WhatsApp Cloud API) senders for automated reminders.
++// Both read the same env keys that /api/notifications/providers/status reports on.
++import type { SendResult } from './resendEmail.ts';
++
++type Env = Record<string, string | undefined>;
++
++export interface TextMessage {
++  /** Recipient phone number in international format, e.g. +260971234567. */
++  to: string;
++  body: string;
++}
++
++export function isSmsConfigured(env: Env = process.env): boolean {
++  return Boolean(env.TWILIO_ACCOUNT_SID?.trim() && env.TWILIO_AUTH_TOKEN?.trim() && env.TWILIO_FROM_NUMBER?.trim());
++}
++
++export function isWhatsAppConfigured(env: Env = process.env): boolean {
++  return Boolean(env.WHATSAPP_ACCESS_TOKEN?.trim() && env.WHATSAPP_PHONE_NUMBER_ID?.trim());
++}
++
++/** Optional safety net for demos: redirects every SMS/WhatsApp to one test number. */
++function resolveRecipient(to: string, env: Env) {
++  const testPhone = env.NOTIFICATION_TEST_PHONE?.trim();
++  return testPhone ? { to: testPhone, prefix: `[TEST for ${to}] ` } : { to, prefix: '' };
++}
++
++function normalisePhone(value: string) {
++  const digits = value.replace(/[^\d+]/g, '');
++  return digits.startsWith('+') ? digits : `+${digits}`;
++}
++
++export async function sendSmsViaTwilio(
++  message: TextMessage,
++  env: Env = process.env,
++  fetchImpl: typeof fetch = fetch,
++): Promise<SendResult> {
++  if (!isSmsConfigured(env)) return { ok: false, reason: 'SMS provider (Twilio) is not configured.' };
++  const sid = env.TWILIO_ACCOUNT_SID!.trim();
++  const { to, prefix } = resolveRecipient(normalisePhone(message.to), env);
++  const form = new URLSearchParams({ To: to, From: env.TWILIO_FROM_NUMBER!.trim(), Body: `${prefix}${message.body}` });
++  try {
++    const response = await fetchImpl(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Messages.json`, {
++      method: 'POST',
++      headers: {
++        Authorization: `Basic ${Buffer.from(`${sid}:${env.TWILIO_AUTH_TOKEN!.trim()}`).toString('base64')}`,
++        'Content-Type': 'application/x-www-form-urlencoded',
++      },
++      body: form.toString(),
++      signal: AbortSignal.timeout(10_000),
++    });
++    const payload: any = await response.json().catch(() => null);
++    if (!response.ok || !payload?.sid) return { ok: false, reason: payload?.message || `Twilio HTTP ${response.status}` };
++    return { ok: true, providerMessageId: String(payload.sid) };
++  } catch (error) {
++    return { ok: false, reason: error instanceof Error ? error.message : 'Twilio request failed.' };
++  }
++}
++
++/**
++ * Sends a WhatsApp message. Meta only allows free text inside the 24-hour
++ * customer-service window; reminders outside it need an approved template,
++ * set with WHATSAPP_TEMPLATE_NAME (body parameter 1 = the full reminder text).
++ */
++export async function sendWhatsAppMessage(
++  message: TextMessage,
++  env: Env = process.env,
++  fetchImpl: typeof fetch = fetch,
++): Promise<SendResult> {
++  if (!isWhatsAppConfigured(env)) return { ok: false, reason: 'WhatsApp provider is not configured.' };
++  const { to, prefix } = resolveRecipient(normalisePhone(message.to), env);
++  const text = `${prefix}${message.body}`;
++  const template = env.WHATSAPP_TEMPLATE_NAME?.trim();
++  const payload = template
++    ? {
++        messaging_product: 'whatsapp', to: to.replace(/^\+/, ''), type: 'template',
++        template: {
++          name: template,
++          language: { code: env.WHATSAPP_TEMPLATE_LANGUAGE?.trim() || 'en' },
++          components: [{ type: 'body', parameters: [{ type: 'text', text }] }],
++        },
++      }
++    : { messaging_product: 'whatsapp', to: to.replace(/^\+/, ''), type: 'text', text: { body: text } };
++  try {
++    const version = env.WHATSAPP_API_VERSION?.trim() || 'v21.0';
++    const response = await fetchImpl(`https://graph.facebook.com/${version}/${encodeURIComponent(env.WHATSAPP_PHONE_NUMBER_ID!.trim())}/messages`, {
++      method: 'POST',
++      headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN!.trim()}`, 'Content-Type': 'application/json' },
++      body: JSON.stringify(payload),
++      signal: AbortSignal.timeout(10_000),
++    });
++    const body: any = await response.json().catch(() => null);
++    const id = body?.messages?.[0]?.id;
++    if (!response.ok || !id) return { ok: false, reason: body?.error?.message || `WhatsApp HTTP ${response.status}` };
++    return { ok: true, providerMessageId: String(id) };
++  } catch (error) {
++    return { ok: false, reason: error instanceof Error ? error.message : 'WhatsApp request failed.' };
++  }
++}
+--- a/OPAS-SmartGuide/src/server/opasPaymentIntegration.ts
++++ b/OPAS-SmartGuide/src/server/opasPaymentIntegration.ts
+@@ -260,7 +260,7 @@
+ function firstReminderDue(application: PassportApplication, rules: ReminderRule[], from: Date) {
+   const rule = rules.find((candidate) => candidate.enabled && candidate.statuses.includes(application.status));
+   if (!rule) return { scheduled: false as const, reason: 'No reminder rule is enabled for this status.' };
+-  const days = rule.escalationDays?.[0] ?? rule.inactiveDays;
++  const days = rule.inactiveDays;
+   return {
+     scheduled: true as const,
+     ruleId: rule.id,
+@@ -424,6 +424,7 @@
+     paidAt: input.paymentDate,
+     status: nextStatus,
+     daysInStatus: nextStatus === application.status ? application.daysInStatus : 0,
++    statusChangedAt: nextStatus === application.status ? application.statusChangedAt : now.toISOString(),
+     notifications,
+     lastUpdated: now.toISOString(),
+   };
+@@ -475,7 +476,7 @@
+     const flags = application.feePaid ? [] : ['SUBMITTED_WITHOUT_RECORDED_PAYMENT'];
+     const { notifications, cancelled } = cancelPendingReminders(application, now, 'OPAS reported that the application was submitted.');
+     const updated: PassportApplication = {
+-      ...application, status: 'Submitted - Under Review', daysInStatus: 0, notifications, lastUpdated: now.toISOString(),
++      ...application, status: 'Submitted - Under Review', daysInStatus: 0, statusChangedAt: now.toISOString(), notifications, lastUpdated: now.toISOString(),
+     };
+     return {
+       httpStatus: 200,
+@@ -493,7 +494,7 @@
+         event: newEvent(state, 'APPLICATION', input.applicationReference, 'DUPLICATE_IGNORED', 'Application was already reverted.'),
+       };
+     }
+-    const updated: PassportApplication = { ...application, status: 'Reverted', daysInStatus: 0, lastUpdated: now.toISOString() };
++    const updated: PassportApplication = { ...application, status: 'Reverted', daysInStatus: 0, statusChangedAt: now.toISOString(), lastUpdated: now.toISOString() };
+     return {
+       httpStatus: 200,
+       body: { success: true, applicationStatus: updated.status, remindersStopped: false, reminders: firstReminderDue(updated, state.rules, now), ...ack },
+@@ -525,7 +526,7 @@
+       event: newEvent(state, 'APPLICATION', input.applicationReference, 'DUPLICATE_IGNORED', 'Already paid and unsubmitted.'),
+     };
+   }
+-  const updated: PassportApplication = { ...application, status: 'Paid - Unsubmitted', daysInStatus: 0, lastUpdated: now.toISOString() };
++  const updated: PassportApplication = { ...application, status: 'Paid - Unsubmitted', daysInStatus: 0, statusChangedAt: now.toISOString(), lastUpdated: now.toISOString() };
+   return {
+     httpStatus: 200,
+     body: { success: true, applicationStatus: updated.status, reminders: firstReminderDue(updated, state.rules, now), ...ack },
+--- a/OPAS-SmartGuide/src/server/persistence.ts
++++ b/OPAS-SmartGuide/src/server/persistence.ts
+@@ -264,7 +264,7 @@
+     INSERT OR IGNORE INTO applicant_messages
+       (id, applicant_user_id, application_reference, channel, subject, content, status, created_at, read_at, batch_id, dedupe_key)
+     VALUES (@id, @applicantUserId, @applicationReference, @channel, @subject, @content, @status, @createdAt, @readAt, @batchId, @dedupeKey)
+-  `).run(record);
++  `).run({ ...record, readAt: record.readAt ?? null });
+   return result.changes > 0;
+ }
+ 
+--- a/OPAS-SmartGuide/src/types/auth.ts
++++ b/OPAS-SmartGuide/src/types/auth.ts
+@@ -1,4 +1,3 @@
+-Import UserAccount from ./src/types/auth.ts 
+ export type UserRole = 'citizen' | 'officer' | 'supervisor' | 'admin';
+ 
+ export type OfficerClearanceLevel =
+@@ -27,28 +26,3 @@
+   currentUser: UserAccount | null;
+   isAuthenticated: boolean;
+ }
+-let user = INITIAL_USERS.find(/* existing lookup */);
+-let authenticatedByOpas = false;
+-if (!user || (user.role === 'citizen' && false)) { /* keep existing */ }
+-if (!user && normalized) {
+-  try {
+-    const payload = await fetchSimulatedOpasApi('/api/identity/authenticate', {
+-      method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({ identifier: normalized, password }),
+-    });
+-    const a = payload?.applicant || payload?.user;
+-    if (a?.id && a?.email) {
+-      user = {
+-        id: `sim-${a.id}`, email: a.email, fullName: a.fullName || a.name || a.email,
+-        role: 'citizen', nrcNumber: a.nrcNumber, phone: a.phone || '',
+-        status: 'ACTIVE', createdAt: new Date().toISOString(), lastLogin: new Date().toISOString(),
+-      };
+-      simulatedCitizens.set(user.id, user);
+-      authenticatedByOpas = true;
+-    }
+-  } catch { /* fall through to 401 */ }
+-}
+-const expectedPassword = authenticatedByOpas ? password
+-  : (user?.role === 'citizen' ? process.env.OPAS_DEMO_CITIZEN_PASSWORD?.trim()
+-                              : process.env.OPAS_DEMO_STAFF_PASSWORD?.trim());
+--- a/OPAS-SmartGuide/src/types/passport.ts
++++ b/OPAS-SmartGuide/src/types/passport.ts
+@@ -101,6 +101,8 @@
+   scheduledAt?: string;
+   failureReason?: string;
+   actionTakenAt?: string;
++  /** Reminder rule that produced an automated notification (per-rule caps). */
++  ruleId?: string;
+   /** Immutable dispatch context retained for operational review. */
+   auditId?: string;
+   trigger?: 'MANUAL_OFFICER' | 'BULK_REMINDER' | 'AUTOMATED_WORKFLOW' | 'CITIZEN_ACTION' | 'SMARTGUIDE_PAYMENT_DETECTION';
+@@ -149,6 +151,8 @@
+   status: ApplicationStatus;
+   submissionStatus?: 'SUBMITTED' | 'NOT_SUBMITTED';
+   daysInStatus: number;
++  /** ISO time the current status began. Used to age cases so reminders fire for records synced from OPAS. */
++  statusChangedAt?: string;
+   reversionReason?: string;
+   revertedItems?: string[];
+   revertedAt?: string;
+--- a/OPAS-SmartGuide/src/utils/faqMatcher.test.ts
++++ b/OPAS-SmartGuide/src/utils/faqMatcher.test.ts
+@@ -0,0 +1,35 @@
++// EOI 3.1: the assistant must answer approved FAQs with the approved answer.
++import { describe, expect, it } from 'vitest';
++import { APPROVED_FAQS } from '../data/faqs';
++import { approvedFaqPromptBlock, formatApprovedFaqReply, matchApprovedFaq } from './faqMatcher';
++
++describe('approved FAQ matching', () => {
++  it.each(APPROVED_FAQS.map((faq) => [faq.id, faq]))('returns the approved answer for %s', (_id, faq) => {
++    const match = matchApprovedFaq(faq.question);
++    expect(match?.id).toBe(faq.id);
++    expect(formatApprovedFaqReply(match!)).toContain(faq.answer);
++  });
++
++  it('matches common paraphrases', () => {
++    expect(matchApprovedFaq('My application was reverted, do I need to pay again?')?.id).toBe('faq-4');
++    expect(matchApprovedFaq('I paid but my application is unsubmitted, what now?')?.id).toBe('faq-5');
++    expect(matchApprovedFaq('What photo size and background do I need?')?.id).toBe('faq-2');
++  });
++
++  it('does not force an FAQ onto unrelated questions', () => {
++    expect(matchApprovedFaq('hello')).toBeNull();
++    expect(matchApprovedFaq('What is the weather in Lusaka today?')).toBeNull();
++  });
++
++  it('puts every approved answer in the AI prompt block', () => {
++    const block = approvedFaqPromptBlock();
++    for (const faq of APPROVED_FAQS) expect(block).toContain(faq.answer);
++  });
++
++  it('uses Recommender wording consistent with the Form A guidance', () => {
++    const firstTime = APPROVED_FAQS.find((faq) => faq.id === 'faq-1')!;
++    expect(firstTime.answer).toMatch(/Recommender/);
++    expect(firstTime.answer).toMatch(/at least 2 years/);
++    expect(firstTime.answer).toMatch(/Relatives cannot/);
++  });
++});
+--- a/OPAS-SmartGuide/src/utils/faqMatcher.ts
++++ b/OPAS-SmartGuide/src/utils/faqMatcher.ts
+@@ -0,0 +1,66 @@
++// Single source of truth for approved FAQ answers (EOI 3.1).
++// Used by the local grounding engine, the AI prompt, and the portal FAQ list.
++import { APPROVED_FAQS, type FAQItem } from '../data/faqs.ts';
++
++const STOP_WORDS = new Set([
++  'a', 'an', 'the', 'is', 'are', 'do', 'does', 'i', 'my', 'me', 'to', 'for', 'of', 'and', 'or', 'in', 'on',
++  'what', 'why', 'how', 'where', 'when', 'can', 'has', 'have', 'was', 'be', 'it', 'this', 'that', 'not', 'much',
++]);
++
++function tokens(text: string): string[] {
++  return text
++    .toLowerCase()
++    .replace(/[^a-z0-9\s-]/g, ' ')
++    .split(/\s+/)
++    .filter((t) => t.length > 1 && !STOP_WORDS.has(t));
++}
++
++function stem(word: string) {
++  return word.replace(/(ing|ed|es|s)$/, '');
++}
++
++/** Scores a message against one FAQ. Tags weigh more than question words. */
++export function scoreFaq(message: string, faq: FAQItem): number {
++  const lower = message.toLowerCase();
++  const messageStems = new Set(tokens(message).map(stem));
++  let score = 0;
++  for (const tag of faq.tags) {
++    const tagLower = tag.toLowerCase();
++    if (tagLower.includes(' ') || tagLower.includes('-')) {
++      if (lower.includes(tagLower) || lower.includes(tagLower.replace('-', ' '))) score += 3;
++    } else if (messageStems.has(stem(tagLower))) {
++      score += 2;
++    }
++  }
++  for (const word of new Set(tokens(faq.question).map(stem))) {
++    if (messageStems.has(word)) score += 1;
++  }
++  return score;
++}
++
++/** Minimum score for an approved answer to be returned verbatim. */
++export const FAQ_MATCH_THRESHOLD = 5;
++
++export function matchApprovedFaq(message: string, faqs: FAQItem[] = APPROVED_FAQS): FAQItem | null {
++  if (!message || !message.trim()) return null;
++  let best: FAQItem | null = null;
++  let bestScore = 0;
++  for (const faq of faqs) {
++    const score = scoreFaq(message, faq);
++    if (score > bestScore) {
++      best = faq;
++      bestScore = score;
++    }
++  }
++  return bestScore >= FAQ_MATCH_THRESHOLD ? best : null;
++}
++
++/** Block appended to the AI system prompt so model answers never contradict approved FAQs. */
++export function approvedFaqPromptBlock(faqs: FAQItem[] = APPROVED_FAQS): string {
++  const body = faqs.map((faq) => `Q: ${faq.question}\nA: ${faq.answer}`).join('\n\n');
++  return `APPROVED FAQ ANSWERS (authoritative). When the user's question matches one of these, answer from it and do not contradict it. If other guidance in this prompt conflicts with an approved answer, the approved answer wins.\n\n${body}`;
++}
++
++export function formatApprovedFaqReply(faq: FAQItem): string {
++  return `**${faq.question}**\n\n${faq.answer}\n\n_Source: approved MoHAIS FAQ (${faq.category})._`;
++}
+--- a/OPAS-SmartGuide/src/utils/phoneAndEmailValidation.test.ts
++++ b/OPAS-SmartGuide/src/utils/phoneAndEmailValidation.test.ts
+@@ -0,0 +1,47 @@
++// EOI 3.2: contact validation edge cases (phones, email typos, auto-fix suggestions).
++import { describe, expect, it } from 'vitest';
++import { suggestEmailCorrection, validateEmail, validatePhoneNumber } from './validation';
++
++describe('phone validation', () => {
++  it('normalises a local Zambian mobile number to E.164', () => {
++    const result = validatePhoneNumber('0971234567');
++    expect(result.isValid).toBe(true);
++    expect(result.formatted).toBe('+260971234567');
++  });
++
++  it('accepts an already international mobile number', () => {
++    expect(validatePhoneNumber('+260 97 123 4567')).toMatchObject({ isValid: true, formatted: '+260971234567' });
++  });
++
++  it('rejects a number that is too short', () => {
++    expect(validatePhoneNumber('+260 95 12').isValid).toBe(false);
++  });
++
++  it('rejects letters and an empty number', () => {
++    expect(validatePhoneNumber('09712abc67').isValid).toBe(false);
++    expect(validatePhoneNumber('').isValid).toBe(false);
++  });
++
++  it('warns on a non-mobile (landline) prefix', () => {
++    const result = validatePhoneNumber('+260211123456');
++    expect(result.isValid).toBe(true);
++    expect(result.warning).toBeTruthy();
++  });
++});
++
++describe('email typo detection', () => {
++  it.each([
++    ['a@gnail.com', 'a@gmail.com'],
++    ['a@gamil.com', 'a@gmail.com'],
++    ['a@yaho.com', 'a@yahoo.com'],
++    ['a@outlok.com', 'a@outlook.com'],
++  ])('flags %s and suggests %s', (input, fixed) => {
++    expect(validateEmail(input).warning).toContain(fixed.split('@')[1]);
++    expect(suggestEmailCorrection(input)).toBe(fixed);
++  });
++
++  it('leaves correct addresses alone', () => {
++    expect(validateEmail('a@gmail.com')).toEqual({ isValid: true });
++    expect(suggestEmailCorrection('a@gmail.com')).toBeNull();
++  });
++});
+--- a/OPAS-SmartGuide/src/utils/reminderRules.test.ts
++++ b/OPAS-SmartGuide/src/utils/reminderRules.test.ts
+@@ -1,7 +1,12 @@
+ // Runtime validation coverage for automated reminder eligibility.
+ import { describe, expect, it } from 'vitest';
+ import { INITIAL_APPLICATIONS } from '../data/mockApplications';
+-import { detectReminderCandidates } from './reminderRules';
++import { buildReminderMessage, detectReminderCandidates, effectiveDaysInStatus, MIN_REMINDER_INTERVAL_HOURS } from './reminderRules';
++import type { NotificationLog, PassportApplication } from '../types/passport';
++
++const reminder = (timestamp: string, extra: Partial<NotificationLog> = {}): NotificationLog => ({
++  id: `n-${timestamp}`, timestamp, channel: 'SMS', content: 'Reminder', deliveryStatus: 'Delivered', trigger: 'AUTOMATED_WORKFLOW', ...extra,
++});
+ 
+ describe('automated reminder eligibility', () => {
+   it('selects an available channel for an inactive paid application', () => {
+@@ -40,4 +45,42 @@
+       new Date('2026-11-07T00:00:00.000Z')
+     )).toHaveLength(0);
+   });
++
++  it('enforces the 72-hour anti-spam interval across rules and sources', () => {
++    expect(MIN_REMINDER_INTERVAL_HOURS).toBe(72);
++    const base = { ...INITIAL_APPLICATIONS[1], notifications: [] } as PassportApplication;
++    const now = new Date('2026-11-10T00:00:00.000Z');
++    // 71 hours ago: blocked, even though it came from a bulk run.
++    expect(detectReminderCandidates([{ ...base, notifications: [reminder('2026-11-07T01:00:00.000Z', { trigger: 'BULK_REMINDER' })] }], undefined, now)).toHaveLength(0);
++    // 73 hours ago: allowed.
++    expect(detectReminderCandidates([{ ...base, notifications: [reminder('2026-11-06T23:00:00.000Z')] }], undefined, now)).toHaveLength(1);
++    // A cancelled reminder does not count.
++    expect(detectReminderCandidates([{ ...base, notifications: [reminder('2026-11-09T23:00:00.000Z', { deliveryStatus: 'Cancelled' })] }], undefined, now)).toHaveLength(1);
++  });
++
++  it('ages OPAS-synced cases from statusChangedAt even when daysInStatus is 0', () => {
++    const application = { ...INITIAL_APPLICATIONS[1], daysInStatus: 0, statusChangedAt: '2026-11-08T00:00:00.000Z', notifications: [] } as PassportApplication;
++    const now = new Date('2026-11-10T06:00:00.000Z');
++    expect(effectiveDaysInStatus(application, now)).toBe(2);
++    expect(detectReminderCandidates([application], undefined, now)).toHaveLength(1);
++    expect(detectReminderCandidates([{ ...application, statusChangedAt: '2026-11-10T00:00:00.000Z' }], undefined, now)).toHaveLength(0);
++  });
++
++  it('caps reminders per rule, not per case', () => {
++    const now = new Date('2026-12-30T00:00:00.000Z');
++    const oldDraftReminders = ['2026-11-01', '2026-11-05', '2026-11-09'].map((d) => reminder(`${d}T00:00:00.000Z`, { ruleId: 'draft-24h' }));
++    const application = { ...INITIAL_APPLICATIONS[1], daysInStatus: 5, notifications: oldDraftReminders } as PassportApplication;
++    expect(detectReminderCandidates([application], undefined, now)).toHaveLength(1);
++    const paidReminders = ['2026-11-01', '2026-11-05', '2026-11-09'].map((d) => reminder(`${d}T00:00:00.000Z`, { ruleId: 'paid-unsubmitted-24h' }));
++    expect(detectReminderCandidates([{ ...application, notifications: paidReminders }], undefined, now)).toHaveLength(0);
++  });
++
++  it('tells paid applicants to book biometrics and not to pay again', () => {
++    const paid = buildReminderMessage({ ...INITIAL_APPLICATIONS[1], status: 'Paid - Unsubmitted' } as PassportApplication);
++    expect(paid.content).toMatch(/biometrics/i);
++    expect(paid.content).toMatch(/do not need to pay again/i);
++    const reverted = buildReminderMessage({ ...INITIAL_APPLICATIONS[1], status: 'Reverted', reversionReason: 'Photo background' } as PassportApplication);
++    expect(reverted.content).toMatch(/do not need to pay again/i);
++    expect(reverted.content).toContain('Photo background');
++  });
+ });
+--- a/OPAS-SmartGuide/src/utils/reminderRules.ts
++++ b/OPAS-SmartGuide/src/utils/reminderRules.ts
+@@ -26,7 +26,7 @@
+     label: 'Paid but unsubmitted follow-up',
+     statuses: ['Paid - Unsubmitted'],
+     inactiveDays: 1,
+-    cooldownDays: 2,
++    cooldownDays: 3,
+     maximumReminders: 3,
+     channelPriority: ['WhatsApp', 'SMS', 'Email', 'OPAS Message Board'],
+     enabled: true,
+@@ -36,7 +36,7 @@
+     label: 'Reverted application correction reminder',
+     statuses: ['Reverted'],
+     inactiveDays: 1,
+-    cooldownDays: 1,
++    cooldownDays: 3,
+     maximumReminders: 4,
+     channelPriority: ['WhatsApp', 'SMS', 'Email', 'OPAS Message Board'],
+     enabled: true,
+@@ -46,7 +46,7 @@
+     label: 'Inactive draft completion reminder',
+     statuses: ['Draft'],
+     inactiveDays: 1,
+-    cooldownDays: 1,
++    cooldownDays: 3,
+     maximumReminders: 2,
+     channelPriority: ['WhatsApp', 'Email', 'OPAS Message Board'],
+     enabled: true,
+@@ -66,9 +66,48 @@
+   return channels.find((channel) => channelIsAvailable(application, channel)) || null;
+ }
+ 
+-function isWithinCooldown(notification: NotificationLog, cooldownDays: number, now: Date): boolean {
+-  const timestamp = new Date(notification.deliveryUpdatedAt || notification.timestamp).getTime();
+-  return Number.isFinite(timestamp) && now.getTime() - timestamp < cooldownDays * 24 * 60 * 60 * 1000;
++const DAY_MS = 24 * 60 * 60 * 1000;
++
++/**
++ * EOI 3.4 anti-spam rule: an applicant receives at most one reminder in any
++ * 72-hour window, across every rule, channel and reminder source.
++ */
++export const MIN_REMINDER_INTERVAL_HOURS = 72;
++
++const REMINDER_TRIGGERS: NonNullable<NotificationLog['trigger']>[] = [
++  'AUTOMATED_WORKFLOW',
++  'BULK_REMINDER',
++  'SMARTGUIDE_PAYMENT_DETECTION',
++];
++
++function notificationTime(notification: NotificationLog): number {
++  return new Date(notification.timestamp || notification.deliveryUpdatedAt || '').getTime();
++}
++
++function isWithinWindow(notification: NotificationLog, windowMs: number, now: Date): boolean {
++  const timestamp = notificationTime(notification);
++  return Number.isFinite(timestamp) && now.getTime() - timestamp < windowMs;
++}
++
++/**
++ * Days the case has spent in its current status. Uses the stored status-change
++ * time when available, so cases synced from OPAS age even though nothing
++ * increments daysInStatus.
++ */
++export function effectiveDaysInStatus(application: PassportApplication, now: Date = new Date()): number {
++  const stored = application.daysInStatus || 0;
++  const changedAt = application.statusChangedAt ? new Date(application.statusChangedAt).getTime() : NaN;
++  if (!Number.isFinite(changedAt)) return stored;
++  return Math.max(0, Math.floor((now.getTime() - changedAt) / DAY_MS));
++}
++
++/** Returns the most recent reminder of any kind, or null. */
++export function lastReminderAt(application: PassportApplication): Date | null {
++  const times = application.notifications
++    .filter((n) => n.trigger && REMINDER_TRIGGERS.includes(n.trigger) && n.deliveryStatus !== 'Cancelled')
++    .map(notificationTime)
++    .filter(Number.isFinite);
++  return times.length ? new Date(Math.max(...times)) : null;
+ }
+ 
+ /** Returns only cases that are eligible for one non-duplicated reminder. */
+@@ -81,11 +120,25 @@
+ 
+   for (const application of applications) {
+     const rule = rules.find((candidateRule) => candidateRule.enabled && candidateRule.statuses.includes(application.status));
+-    if (!rule || application.daysInStatus < rule.inactiveDays) continue;
++    const days = effectiveDaysInStatus(application, now);
++    if (!rule || days < rule.inactiveDays) continue;
+ 
+-    const priorRuleNotifications = application.notifications.filter((notification) => notification.trigger === 'AUTOMATED_WORKFLOW');
++    // Per-rule cap. Older notifications without a ruleId still count, so caps never loosen.
++    const priorRuleNotifications = application.notifications.filter((notification) =>
++      notification.trigger === 'AUTOMATED_WORKFLOW' &&
++      notification.deliveryStatus !== 'Cancelled' &&
++      (!notification.ruleId || notification.ruleId === rule.id)
++    );
+     if (priorRuleNotifications.length >= rule.maximumReminders) continue;
+-    if (priorRuleNotifications.some((notification) => isWithinCooldown(notification, rule.cooldownDays, now))) continue;
++
++    // Anti-spam: never less than 72h since ANY reminder, and never less than the rule cooldown.
++    const windowMs = Math.max(MIN_REMINDER_INTERVAL_HOURS * 60 * 60 * 1000, rule.cooldownDays * DAY_MS);
++    const recentReminder = application.notifications.some((notification) =>
++      notification.trigger && REMINDER_TRIGGERS.includes(notification.trigger) &&
++      notification.deliveryStatus !== 'Cancelled' &&
++      isWithinWindow(notification, windowMs, now)
++    );
++    if (recentReminder) continue;
+ 
+     const channel = selectChannel(application, rule.channelPriority);
+     if (!channel) continue;
+@@ -94,13 +147,36 @@
+       application,
+       rule,
+       channel,
+-      reason: `${rule.label}: inactive for ${application.daysInStatus} day(s).`,
++      reason: `${rule.label}: inactive for ${days} day(s).`,
+     });
+   }
+ 
+   return candidates;
+ }
+ 
++/** Applicant-facing reminder text for each automated rule. */
++export function buildReminderMessage(application: PassportApplication): { subject: string; content: string } {
++  const name = application.fullName;
++  const ref = application.trackingNumber;
++  if (application.status === 'Reverted') {
++    const reason = application.reversionReason ? ` Reason: ${application.reversionReason}.` : '';
++    return {
++      subject: 'MoHAIS OPAS: correction needed on your passport application',
++      content: `MoHAIS OPAS: Dear ${name}, your application #${ref} was returned for correction.${reason} Please log in to OPAS, fix the listed items and resubmit. You do not need to pay again; your earlier payment remains linked to this application.`,
++    };
++  }
++  if (application.status === 'Paid - Unsubmitted') {
++    return {
++      subject: 'MoHAIS OPAS: payment received, submission still needed',
++      content: `MoHAIS OPAS: Dear ${name}, we received your payment for application #${ref}, but the application has not been submitted. Please log in to OPAS, book your biometrics appointment and complete the final submission. You do not need to pay again.`,
++    };
++  }
++  return {
++    subject: 'MoHAIS OPAS: your passport application is incomplete',
++    content: `MoHAIS OPAS: Dear ${name}, your passport application #${ref} is still a draft. Please log in to OPAS to complete it and make payment when ready.`,
++  };
++}
++
+ /** Return the configured reminder channels that have usable applicant contact details. */
+ export function availableChannels(application: PassportApplication, channels: ReminderChannel[]): ReminderChannel[] {
+   return channels.filter((channel) => channelIsAvailable(application, channel));
+--- a/OPAS-SmartGuide/src/utils/validation.ts
++++ b/OPAS-SmartGuide/src/utils/validation.ts
+@@ -152,8 +152,28 @@
+   'yahooo.com': 'yahoo.com',
+   'hotmial.com': 'hotmail.com',
+   'outlok.com': 'outlook.com',
++  'gnail.com': 'gmail.com',
++  'gmai.com': 'gmail.com',
++  'gmail.co': 'gmail.com',
++  'gmal.com': 'gmail.com',
++  'gmil.com': 'gmail.com',
++  'yahoo.co': 'yahoo.com',
++  'yhoo.com': 'yahoo.com',
++  'hotmal.com': 'hotmail.com',
++  'hotmai.com': 'hotmail.com',
++  'outlook.co': 'outlook.com',
++  'outloo.com': 'outlook.com',
+ };
+ 
++/** Returns the email with a known domain typo corrected, or null when no known typo applies. */
++export function suggestEmailCorrection(email: string): string | null {
++  const clean = (email || '').trim().toLowerCase();
++  const at = clean.lastIndexOf('@');
++  if (at < 1) return null;
++  const fixed = COMMON_EMAIL_TYPOS[clean.slice(at + 1)];
++  return fixed ? `${clean.slice(0, at)}@${fixed}` : null;
++}
++
+ /**
+  * Validates Email Address with typo detection
+  */
