@@ -465,7 +465,8 @@ export function processApplicationEvent(input: ApplicationEventInput, state: Int
   const ack = input.opasAcknowledgementReference ? { opasAcknowledgementReference: input.opasAcknowledgementReference } : {};
 
   if (input.applicationStatus === 'SUBMITTED') {
-    if (isSubmitted(application.status)) {
+    // A reverted application that the applicant corrects and resubmits must move on; only other submitted states are duplicates.
+    if (isSubmitted(application.status) && application.status !== 'Reverted') {
       return {
         httpStatus: 200,
         body: { success: true, unchanged: true, applicationStatus: application.status, remindersStopped: true, ...ack },
