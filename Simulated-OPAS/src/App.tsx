@@ -5,12 +5,13 @@ import { AuthModal } from './components/AuthModal';
 import { LoginPage } from './components/LoginPage';
 import { RegisterPage } from './components/RegisterPage';
 import { ApplicantDashboard } from './components/ApplicantDashboard';
+import { SmartGuidePrefillCard } from './components/SmartGuidePrefillCard';
 import {
-  AiApplicationAssistant,
-  AI_ASSISTANT_ACTOR,
-  buildAiPrefillUpdates,
-  type AiApplicationDraft,
-} from './components/AiApplicationAssistant';
+  SMARTGUIDE_PREFILL_ACTOR,
+  buildSmartGuidePrefillUpdates,
+  captureSmartGuideCodeFromUrl,
+  type SmartGuidePrefillDraft,
+} from './utils/smartGuidePrefill';
 import { WizardProgress } from './components/ApplicationWizard/WizardProgress';
 import { Step1Category } from './components/ApplicationWizard/Step1Category';
 import { Step2PersonalDetails } from './components/ApplicationWizard/Step2PersonalDetails';
@@ -20,6 +21,9 @@ import { Step5ReviewDeclaration } from './components/ApplicationWizard/Step5Revi
 import { Step6Payment } from './components/ApplicationWizard/Step6Payment';
 import { Step7Appointment } from './components/ApplicationWizard/Step7Appointment';
 import { ArrowLeft, Bot, Loader2 } from 'lucide-react';
+
+// Keep a SmartGuide claim code from the URL so it survives the sign-in screen.
+captureSmartGuideCodeFromUrl();
 
 const OPASAppContent: React.FC = () => {
   const {
@@ -34,8 +38,8 @@ const OPASAppContent: React.FC = () => {
     setAuthPageMode,
   } = usePassport();
 
-  // AI-Assisted Application: draft waiting to be written into the newly created application.
-  const [pendingPrefill, setPendingPrefill] = useState<{ appId: string; draft: AiApplicationDraft } | null>(null);
+  // SmartGuide AI pre-fill: draft waiting to be written into the newly created application.
+  const [pendingPrefill, setPendingPrefill] = useState<{ appId: string; draft: SmartGuidePrefillDraft } | null>(null);
 
   const handleStartNew = () => {
     if (!currentUser) {
@@ -47,18 +51,18 @@ const OPASAppContent: React.FC = () => {
     setCurrentAppId(newApp.id);
   };
 
-  const handleAiApply = (draft: AiApplicationDraft) => {
+  const handleSmartGuideApply = (draft: SmartGuidePrefillDraft) => {
     if (!currentUser) return;
     const newApp = startNewApplication(draft.applicationType || 'NEW');
     setCurrentAppId(newApp.id);
     setPendingPrefill({ appId: newApp.id, draft });
   };
 
-  // Once the new application is the current one, write the AI draft into it.
+  // Once the new application is the current one, write the SmartGuide draft into it.
   // The wizard steps are not rendered until this is done, so they mount with the filled values.
   useEffect(() => {
     if (!pendingPrefill || !currentApp || currentApp.id !== pendingPrefill.appId) return;
-    updateCurrentApplication(buildAiPrefillUpdates(currentApp, pendingPrefill.draft));
+    updateCurrentApplication(buildSmartGuidePrefillUpdates(currentApp, pendingPrefill.draft));
     setPendingPrefill(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingPrefill, currentApp]);
@@ -69,7 +73,7 @@ const OPASAppContent: React.FC = () => {
 
   const currentStep = currentApp?.currentStep || 1;
   const isApplyingAiPrefill = !!pendingPrefill && currentApp?.id === pendingPrefill.appId;
-  const wasAiPrefilled = !!currentApp?.statusHistory.some(entry => entry.updatedBy === AI_ASSISTANT_ACTOR);
+  const wasAiPrefilled = !!currentApp?.statusHistory.some(entry => entry.updatedBy === SMARTGUIDE_PREFILL_ACTOR);
 
   const goToStep = (step: number) => {
     if (!currentApp) return;
@@ -157,7 +161,7 @@ const OPASAppContent: React.FC = () => {
                 <div className="p-3 bg-sky-50 border border-sky-200 rounded-lg flex items-start gap-2 text-xs text-sky-900">
                   <Bot className="w-4 h-4 text-sky-700 shrink-0 mt-0.5" />
                   <span>
-                    This form was pre-filled by the AI-Assisted Application from your answers. Check every field and
+                    This form was pre-filled by OPAS SmartGuide AI from your answers. Check every field and
                     correct anything that is wrong before you sign the declaration and pay. Documents still need to be
                     uploaded by you.
                   </span>
@@ -216,7 +220,7 @@ const OPASAppContent: React.FC = () => {
           /* Logged In: Citizen Dashboard */
           <div className="max-w-7xl mx-auto px-4 sm:px-8 py-8 space-y-8">
             <div className="max-w-6xl mx-auto">
-              <AiApplicationAssistant onApply={handleAiApply} />
+              <SmartGuidePrefillCard onApply={handleSmartGuideApply} />
             </div>
             <ApplicantDashboard
               onStartNew={handleStartNew}

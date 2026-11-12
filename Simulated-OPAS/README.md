@@ -19,19 +19,23 @@ View your app in AI Studio: https://ai.studio/apps/3efae543-a944-4421-a9c4-e8d21
 3. Run the app:
    `npm run dev`
 
-## AI-Assisted Application (citizen dashboard)
+## SmartGuide AI fills the application form
 
-The citizen dashboard has an **AI-Assisted Application** card. The applicant chats with an assistant in plain language ("I need a new 32-page passport, I was born in Kitwe on 4 March 1996, my father is …"). The assistant asks follow-up questions for anything that is missing and shows a live **Form preview**. When the applicant presses **Fill my application form**, Simulated OPAS creates a new application and opens the wizard with the category, booklet, processing speed, personal details, parents, heritage, address, emergency contact and previous-passport details already filled in.
+The AI runs in **OPAS SmartGuide**, not in Simulated OPAS. The citizen dashboard has a **SmartGuide AI fills your form** card:
 
-How it works:
+1. **Open SmartGuide AI assistant** opens `http://localhost:3001/ai-fill` (SmartGuide). The applicant chats in plain language; SmartGuide (Gemini, server side) turns the answers into form fields and shows a live preview.
+2. In SmartGuide the applicant presses **Send to my OPAS application**. SmartGuide sends the draft to Simulated OPAS over the signed HMAC bridge and gets back a one-time claim code (e.g. `ABCD-2345`, valid 24 hours).
+3. **Open OPAS and fill my form** (or typing the code on the dashboard) loads the draft. Simulated OPAS creates a new application and opens the wizard with category, booklet, speed, personal details, parents, heritage, address, emergency contact and previous-passport details filled in.
+4. The applicant reviews every step, uploads documents, signs the declaration and pays. Nothing is submitted or paid automatically. A notice in the wizard and a status-history entry (`OPAS SmartGuide AI Application Filler`) mark pre-filled applications.
 
-- UI: `src/components/AiApplicationAssistant.tsx` (chat, live preview, apply). `src/App.tsx` creates the application and writes the draft into it before the wizard renders.
-- API: `POST /api/ai/application-assist` in `server/aiApplicationAssist.ts`, registered by `vite.ai.config.ts` (which loads the existing `vite.config.ts` unchanged). `npm run dev` uses this config; `npm run dev:no-ai` runs without it.
-- The Gemini call (`gemini-2.5-flash`) runs on the dev server only. `GEMINI_API_KEY` is never sent to the browser. Without a key the endpoint returns HTTP 503 and the card shows a configuration message.
-- Every value the model returns is checked against an allow-list of form fields, allowed enum values, `YYYY-MM-DD` dates, NRC format and height range. Unknown fields are dropped. The list of missing required fields is computed on the server from the same rules as Step 2, not by the model.
-- The assistant is instructed to use only what the applicant actually said and never to guess values. It does not submit, pay, verify identity or book appointments. The applicant still reviews every step, uploads documents, signs the declaration and pays in the normal wizard. A notice in the wizard and an entry in the application's status history (`OPAS AI Application Assistant`) mark AI-filled applications.
+Endpoints (registered by `vite.prefill.config.ts`, which loads `vite.config.ts` unchanged; `npm run dev` uses it, `npm run dev:no-prefill` runs without it):
 
-To test: add `GEMINI_API_KEY` to `.env.local`, run `npm run dev`, sign in with a fictional applicant, press **Start AI-Assisted Application**, describe yourself with fictional details, then press **Fill my application form** and step through the wizard. Use fictional test data only.
+- `POST /api/integration/smartguide/prefill-drafts` — server to server, from SmartGuide only. Requires `X-OPAS-Timestamp` and `X-OPAS-Signature` = HMAC-SHA256(`OPAS_INTEGRATION_SECRET`, `timestamp.rawBody`), 5-minute window. The draft is re-checked against the same field allow-list as SmartGuide (unknown fields dropped, enums, dates, NRC format, height). Stored in `data/smartguide-prefill-drafts.json` (git-ignored).
+- `POST /api/smartguide-prefill/claim` `{ code }` — used by the dashboard. Single use, expires after 24 hours, rate limited to 10 attempts per 10 minutes per client.
+
+Code: `server/smartGuidePrefill.ts`, `src/components/SmartGuidePrefillCard.tsx`, `src/utils/smartGuidePrefill.ts`, `src/App.tsx`.
+
+Setup: Simulated OPAS needs `OPAS_INTEGRATION_SECRET` (same value as SmartGuide). Optionally set `VITE_SMARTGUIDE_PUBLIC_URL` if SmartGuide is not on `http://localhost:3001`. Simulated OPAS no longer needs `GEMINI_API_KEY` for this feature. Use fictional test data only.
 
 ## OPAS SmartGuide payment-detection demo
 
