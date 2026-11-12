@@ -9,3 +9,6 @@ coverage/
 
 # Local simulated payment ledger generated during sandbox tests
 data/payment-ledger.json
+
+# One-time SmartGuide pre-fill drafts (contain applicant test data)
+data/smartguide-prefill-drafts.json

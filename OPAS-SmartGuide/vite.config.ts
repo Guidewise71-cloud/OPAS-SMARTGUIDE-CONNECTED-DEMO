@@ -2,10 +2,12 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
+import { applicationPrefillPlugin } from './src/server/applicationPrefillPlugin.ts';
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    // applicationPrefillPlugin: AI Application Filler API (/ai-fill page), dev server only.
+    plugins: [react(), tailwindcss(), applicationPrefillPlugin()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
