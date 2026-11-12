@@ -19,6 +19,20 @@ View your app in AI Studio: https://ai.studio/apps/3efae543-a944-4421-a9c4-e8d21
 3. Run the app:
    `npm run dev`
 
+## AI-Assisted Application (citizen dashboard)
+
+The citizen dashboard has an **AI-Assisted Application** card. The applicant chats with an assistant in plain language ("I need a new 32-page passport, I was born in Kitwe on 4 March 1996, my father is …"). The assistant asks follow-up questions for anything that is missing and shows a live **Form preview**. When the applicant presses **Fill my application form**, Simulated OPAS creates a new application and opens the wizard with the category, booklet, processing speed, personal details, parents, heritage, address, emergency contact and previous-passport details already filled in.
+
+How it works:
+
+- UI: `src/components/AiApplicationAssistant.tsx` (chat, live preview, apply). `src/App.tsx` creates the application and writes the draft into it before the wizard renders.
+- API: `POST /api/ai/application-assist` in `server/aiApplicationAssist.ts`, registered by `vite.ai.config.ts` (which loads the existing `vite.config.ts` unchanged). `npm run dev` uses this config; `npm run dev:no-ai` runs without it.
+- The Gemini call (`gemini-2.5-flash`) runs on the dev server only. `GEMINI_API_KEY` is never sent to the browser. Without a key the endpoint returns HTTP 503 and the card shows a configuration message.
+- Every value the model returns is checked against an allow-list of form fields, allowed enum values, `YYYY-MM-DD` dates, NRC format and height range. Unknown fields are dropped. The list of missing required fields is computed on the server from the same rules as Step 2, not by the model.
+- The assistant is instructed to use only what the applicant actually said and never to guess values. It does not submit, pay, verify identity or book appointments. The applicant still reviews every step, uploads documents, signs the declaration and pays in the normal wizard. A notice in the wizard and an entry in the application's status history (`OPAS AI Application Assistant`) mark AI-filled applications.
+
+To test: add `GEMINI_API_KEY` to `.env.local`, run `npm run dev`, sign in with a fictional applicant, press **Start AI-Assisted Application**, describe yourself with fictional details, then press **Fill my application form** and step through the wizard. Use fictional test data only.
+
 ## OPAS SmartGuide payment-detection demo
 
 This prototype now includes a simulated OPAS API integration:
